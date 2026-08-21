@@ -93,7 +93,7 @@ border:1px solid var(--border)}
 	.slider:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}
 	.switch input:checked+.slider{background:var(--up)}.switch input:checked+.slider:before{transform:translateX(18px)}
 	.btn{border:1px solid #326fba;background:#153a62;color:#dcecff;border-radius:5px;padding:5px 10px;cursor:pointer}
-	.btn:disabled{opacity:.5;cursor:wait}.ctl-msg{min-width:56px;font-size:11px;color:var(--dim)}
+	.btn:disabled{opacity:.5;cursor:wait}#unlockBtn:disabled{opacity:.45;cursor:not-allowed}.ctl-msg{min-width:56px;font-size:11px;color:var(--dim)}
 	@media(max-width:760px){.controls{width:100%;margin-left:0;flex-wrap:wrap}}
 	</style></head><body>
 <div class="topbar"><div class="tb-in">
@@ -110,7 +110,7 @@ border:1px solid var(--border)}
 	<label class="control">交易时段 <span class="switch"><input id="hoursOn" type="checkbox"><span class="slider"></span></span></label>
 	<label class="control">北京 <input id="hoursStart" type="number" min="0" max="23" step="1" value="9">—<input id="hoursEnd" type="number" min="0" max="23" step="1" value="21"> 时</label>
 	<label class="control" title="开启后：窗口开始后的第 N 分钟才允许进场（0=不延迟）。只挡新仓，已有持仓照常管理">延迟进场 <span class="switch"><input id="delayOn" type="checkbox"><span class="slider"></span></span> 第 <input id="delayMin" type="number" min="0" max="4" step="1" value="3"> 分钟</label>
-	<button class="btn" id="unlockBtn" type="button" style="display:none" title="解除 KILL 熔断（全停）并恢复交易；解锁以当前权益为新回撤起点">🔓 解锁熔断</button>
+	<button class="btn" id="unlockBtn" type="button" title="解除 KILL 熔断（全停）并恢复交易；解锁以当前权益为新回撤起点">🔓 解锁熔断</button>
 	<button class="btn" id="saveControls" type="button">保存</button><span class="ctl-msg" id="controlMsg"></span>
 	</div>
 	</div>
@@ -168,7 +168,10 @@ async function tick(){
     set('c_rest',rr,s.rest_reason&&s.rest_reason!=='none'?'warn':'');
     const killed=s.risk_state==='KILL';
     set('c_kill',killed?'熔断中':'正常',killed?'down':'');
-    document.getElementById('unlockBtn').style.display=killed?'':'none';
+    const ub=document.getElementById('unlockBtn');
+    ub.style.display='';          // 始终显示（熔断时可用，平时置灰）
+    ub.disabled=!killed;
+    ub.textContent=killed?'🔓 解锁熔断':'🔓 解锁熔断（未熔断）';
     set('c_twap',tw.v60?tw.v60+' ('+tw.a60+'s前)':'—');
     renderAssets(s);renderMid(s);renderDec(s);renderOrders(s);renderFills(s);
     renderPositions(s);renderSettle(s);
@@ -234,15 +237,16 @@ async function tick(){
 	document.getElementById('delayMin').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('saveControls').addEventListener('click',saveControls);
 	document.getElementById('unlockBtn').addEventListener('click',async function(){
+	  const msg=document.getElementById('controlMsg');
+	  if(this.disabled){msg.textContent='当前未熔断，无需解锁';msg.className='ctl-msg';return}
 	  if(!confirm('确认解锁熔断？解锁后以当前权益为新回撤起点恢复交易。'))return;
 	  const b=this;b.disabled=true;
 	  try{
 	    const r=await fetch('/api/unlock',{method:'POST'});
 	    const data=await r.json();
 	    if(!r.ok)throw new Error(data.error||'解锁失败');
-	    const msg=document.getElementById('controlMsg');
 	    msg.textContent='已请求解锁（≤1s 生效）';msg.className='ctl-msg up';
-	  }catch(e){const msg=document.getElementById('controlMsg');msg.textContent=e.message||'解锁失败';msg.className='ctl-msg down'}
+	  }catch(e){msg.textContent=e.message||'解锁失败';msg.className='ctl-msg down'}
 	  b.disabled=false;
 	});
 	function set(id,v,cls){const el=document.getElementById(id);el.textContent=v;el.className=cls||''}
