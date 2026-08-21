@@ -423,3 +423,28 @@ def test_entry_delay_disabled_by_default():
     rec, wt = FakeRec(), FakeTwap()
     d = eng.decide(features(into_window_s=30.0), rec, wt)
     assert d.action == "TAIL_CAPTURE_UP", d
+
+
+def test_tail_entry_mode_market_taker():
+    """进场方式=市价：TAIL_CAPTURE 决策 tif=FAK、post_only=False、价=ask（保证成交）。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.90"), None, False, 0, "market")
+    d = eng.decide(features(up_ask=0.92, up_bid=0.91), rec, wt)
+    assert d.action == "TAIL_CAPTURE_UP", d
+    assert d.tif == "FAK" and d.post_only is False
+    assert Decimal(d.price) == Decimal("0.92")   # 市价 = ask
+
+
+def test_tail_entry_mode_limit_default():
+    """默认限价：TAIL_CAPTURE 仍为 GTD post-only 挂单（价 = bid+1tick 截限价）。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.98"), None, False, 0, "limit")
+    d = eng.decide(features(up_ask=0.99, up_bid=0.989), rec, wt)
+    assert d.action == "TAIL_CAPTURE_UP", d
+    assert d.tif == "GTD" and d.post_only is True

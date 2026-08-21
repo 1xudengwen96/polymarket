@@ -65,6 +65,9 @@ tail_capture:
   entry_delay_enabled: false     # 延迟进场开关（Dashboard 可覆盖）：true = 窗口进行到
                                  #   entry_delay_minutes 分钟之后才允许开新仓
   entry_delay_minutes: 3         # 延迟进场分钟数（0-4，5 分钟窗口；Dashboard 可覆盖）
+  entry_mode: limit              # 进场方式（Dashboard 可切换）：limit=挂单（post-only，
+                                 #   成交价不高于进场价，可能不成交）；market=市价吃单
+                                 #   （FAK 立即成交，成交价=当时 ask，保证上车）
   tail_min_remaining_s: 10
 
 tail_hedge:

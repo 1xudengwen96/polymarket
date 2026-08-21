@@ -117,6 +117,7 @@ class Supervisor:
         self._tail_exit_price = Decimal(str(config.s("tail_capture.exit_price", 0)))
         self._entry_delay_enabled = bool(config.s("tail_capture.entry_delay_enabled", False))
         self._entry_delay_min = int(config.s("tail_capture.entry_delay_minutes", 3))
+        self._entry_mode = str(config.s("tail_capture.entry_mode", "limit"))
         self._last_risk_state: str | None = None  # 发布给 Dashboard 显示的风控状态
         # 提速缓存：runtime_settings 1s 读一次（面板改动最多 1s 生效）；
         # 成交回调免 DB 读订单 meta（同订单部分成交多次时省读+解析）
@@ -556,6 +557,9 @@ class Supervisor:
         except (TypeError, ValueError):
             delay_min = 3
         delay_min = max(0, min(4, delay_min))
+        # 进场方式（Dashboard 可切换）：limit=挂单 | market=市价吃单
+        entry_mode = str(values.get("tail_entry_mode", self.config.s("tail_capture.entry_mode", "limit")))
+        entry_mode = entry_mode if entry_mode == "market" else "limit"
         # 熔断解锁请求（Dashboard「解锁熔断」按钮）：一次性，处理完置回 0
         if values.get("reset_kill_request", "0").lower() in ("1", "true"):
             self.risk.reset_kill()
@@ -623,7 +627,8 @@ class Supervisor:
         changed = (effective != self._runtime_enabled or notional != self._runtime_notional
                    or rest_reason != self._rest_reason or entry_price != self._tail_entry_price
                    or exit_price != self._tail_exit_price
-                   or delay_on != self._entry_delay_enabled or delay_min != self._entry_delay_min)
+                   or delay_on != self._entry_delay_enabled or delay_min != self._entry_delay_min
+                   or entry_mode != self._entry_mode)
         was_enabled = self._runtime_enabled
         self._runtime_enabled = effective
         self._runtime_notional = notional
@@ -631,9 +636,10 @@ class Supervisor:
         self._tail_exit_price = exit_price
         self._entry_delay_enabled = delay_on
         self._entry_delay_min = delay_min
+        self._entry_mode = entry_mode
         self._profit_target_hit = target_hit
         self.strategy.set_runtime_controls(effective, notional, entry_price, exit_price,
-                                           delay_on, delay_min)
+                                           delay_on, delay_min, entry_mode)
         if rest_reason != self._rest_reason:
             self._rest_reason = rest_reason
             try:
@@ -645,7 +651,7 @@ class Supervisor:
                           fixed_order_notional=str(notional), rest_reason=rest_reason,
                           profit_target=str(target), session_pnl=str(self._bt_session_pnl),
                           tail_entry_price=str(entry_price), tail_exit_price=str(exit_price),
-                          entry_delay=[delay_on, delay_min],
+                          entry_delay=[delay_on, delay_min], entry_mode=entry_mode,
                           trading_hours=[start_h, end_h] if hours_on else None)
         if was_enabled and not effective:
             entry_modules = {"entry", "tail_capture", "xrp_fade", "mid_capture", "arb"}
@@ -702,10 +708,12 @@ class Supervisor:
                 meta={"module": "exit", "token_side": token_side},
             )
         elif d.action.startswith("TAIL_CAPTURE"):
+            tif = d.tif or "GTD"
             intent = OrderIntent(
                 market_id=rec.market_id, token_id=token_map[token_side], side="BUY",
-                price=Decimal(d.price), qty=Decimal(d.qty), tif="GTD", post_only=True,
-                expires_at_ms=t_end_ms - 5_000,
+                price=Decimal(d.price), qty=Decimal(d.qty), tif=tif,
+                post_only=d.post_only if d.post_only is not None else True,
+                expires_at_ms=t_end_ms - 5_000 if tif == "GTD" else None,
                 meta={"module": "tail_capture", "token_side": token_side},
             )
         elif d.action.startswith("XRP_FADE"):

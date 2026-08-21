@@ -123,6 +123,8 @@ class StrategyEngine:
         # 延迟进场（Dashboard 可开关）：窗口进行到第 N 分钟之后才允许开新仓
         self.tail_entry_delay_enabled = bool(config.s("tail_capture.entry_delay_enabled", False))
         self.tail_entry_delay_min = int(config.s("tail_capture.entry_delay_minutes", 3))
+        # 进场方式（Dashboard 可切换）：limit=挂单 post-only；market=市价 FAK 吃单
+        self.tail_entry_mode = str(config.s("tail_capture.entry_mode", "limit"))
         # 反向实验独立风控实例：实验盈亏/连亏/熔断与主账本完全隔离
         # （冷门方胜率极低，若共享风控会以连亏冷却/日亏限额污染主策略）
         self.fade_assets: list[str] = [
@@ -148,7 +150,8 @@ class StrategyEngine:
                              tail_entry_price: Decimal | None = None,
                              tail_exit_price: Decimal | None = None,
                              entry_delay_enabled: bool | None = None,
-                             entry_delay_minutes: int | None = None) -> None:
+                             entry_delay_minutes: int | None = None,
+                             tail_entry_mode: str | None = None) -> None:
         self.auto_trading_enabled = enabled
         self.fixed_order_notional = fixed_order_notional
         if tail_entry_price is not None:
@@ -159,6 +162,8 @@ class StrategyEngine:
             self.tail_entry_delay_enabled = bool(entry_delay_enabled)
         if entry_delay_minutes is not None:
             self.tail_entry_delay_min = max(0, min(4, int(entry_delay_minutes)))
+        if tail_entry_mode is not None:
+            self.tail_entry_mode = tail_entry_mode if tail_entry_mode == "market" else "limit"
 
     def decide(self, f: dict, rec, wt) -> Decision:
         """f: FeatureStore.features() 输出；rec: MarketRecord；wt: WindowTwap。"""
@@ -582,10 +587,19 @@ class StrategyEngine:
                 continue
             max_notional = Decimal(str(s("tail_capture.max_tail_notional", 100)))
             notional = min(self.fixed_order_notional, max_notional)
-            qty = self._qty_for_fixed_notional(notional, maker_price, rec)
+            # 进场方式：limit=挂单（post-only，≤限价）；market=市价吃单（FAK，价=ask，保证成交）
+            if self.tail_entry_mode == "market":
+                order_price = Decimal(str(price))
+                order_tif, order_post = "FAK", False
+                mode_tag = "mkt"
+            else:
+                order_price = maker_price
+                order_tif, order_post = "GTD", True
+                mode_tag = "post"
+            qty = self._qty_for_fixed_notional(notional, order_price, rec)
             ctx = PreTradeContext(
                 market_id=rec.market_id, asset=rec.asset, kind="tail_capture", side="BUY",
-                token_side=token_side, qty=qty, price=maker_price,
+                token_side=token_side, qty=qty, price=order_price,
                 taker_fee=self._taker_fee(rec), remaining_s=remaining, ptb_ready=True,
                 bypass_account_limits=True,
             )
@@ -595,8 +609,8 @@ class StrategyEngine:
             pos.tail_pending = True
             return Decision(
                 action=f"TAIL_CAPTURE_{token_side}", side="BUY", token_side=token_side,
-                price=str(maker_price), qty=str(qty), tif="GTD", post_only=True,
-                reason=f"tail ev: cal={cal.cal_prob:.4f} ask={price:.4f} post={maker_price}",
+                price=str(order_price), qty=str(qty), tif=order_tif, post_only=order_post,
+                reason=f"tail ev: cal={cal.cal_prob:.4f} ask={price:.4f} {mode_tag}={order_price}",
             )
         return Decision.noop("tail capture: no candidate")
 

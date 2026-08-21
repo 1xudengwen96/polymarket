@@ -106,6 +106,8 @@ border:1px solid var(--border)}
 	<label class="control">单笔 <input id="orderAmount" type="number" min="5" max="100" step="0.01" value="5"> USDC</label>
 	<label class="control">止盈 <input id="profitTarget" type="number" min="0" step="0.01" value="0"> USDT</label>
 	<label class="control" title="尾部策略最高进场买价（¢）。挂单价不高于它：设 80 = 只在市场价 ≥80¢ 时参与、且成交价不超过 80¢（市场价高于 80 就不成交）">进场价 <input id="tailEntry" type="number" min="50" max="99.9" step="0.1" value="98"> ¢</label>
+	<label class="control" title="进场方式：限价=挂单（成交价不高于进场价，可能不成交）；市价=到价立即市价买入（保证成交，成交价=当时 ask，可能略高于进场价）">进场 <select id="entryMode">
+	<option value="limit">限价</option><option value="market">市价</option></select></label>
 	<label class="control" title="尾部止盈出场价（¢）。0 = 关闭（持有到结算）；>0 = 持仓方 bid 涨到该价就卖出落袋。例：进场 90 / 出场 99">出场价 <input id="tailExit" type="number" min="0" max="99.9" step="0.1" value="0"> ¢</label>
 	<label class="control">交易时段 <span class="switch"><input id="hoursOn" type="checkbox"><span class="slider"></span></span></label>
 	<label class="control">北京 <input id="hoursStart" type="number" min="0" max="23" step="1" value="9">—<input id="hoursEnd" type="number" min="0" max="23" step="1" value="21"> 时</label>
@@ -190,6 +192,7 @@ async function tick(){
 	  document.getElementById('hoursEnd').value=c.trading_hours_end_bt??21;
 	  document.getElementById('delayOn').checked=!!c.entry_delay_enabled;
 	  document.getElementById('delayMin').value=c.entry_delay_minutes??3;
+	  document.getElementById('entryMode').value=c.tail_entry_mode==='market'?'market':'limit';
 	  controlsReady=true;
 	}
 	async function saveControls(){
@@ -220,7 +223,8 @@ async function tick(){
 	      trading_hours_start_bt:hs,
 	      trading_hours_end_bt:he,
 	      entry_delay_enabled:document.getElementById('delayOn').checked,
-	      entry_delay_minutes:dmin})});
+	      entry_delay_minutes:dmin,
+	      tail_entry_mode:document.getElementById('entryMode').value})});
 	    const data=await r.json();if(!r.ok)throw new Error(data.error||'保存失败');
 	    controlsDirty=false;msg.textContent='已生效';msg.className='ctl-msg up';syncControls(data.controls||{});
 	  }catch(e){msg.textContent=e.message||'保存失败';msg.className='ctl-msg down'}finally{btn.disabled=false}
@@ -390,10 +394,11 @@ def get_controls(conn: _Db) -> dict:
         "trading_hours_end_bt": 21,
         "entry_delay_enabled": False,
         "entry_delay_minutes": 3,
+        "tail_entry_mode": "limit",
     }
     try:
         rows = conn.execute(
-            "SELECT setting_key, value FROM runtime_settings WHERE setting_key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "SELECT setting_key, value FROM runtime_settings WHERE setting_key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             tuple(defaults),
         ).fetchall()
     except Exception:  # table is created by the bot during rolling upgrades
@@ -458,6 +463,9 @@ def save_controls(db_path: str, payload: dict) -> dict:
     delay_min = payload.get("entry_delay_minutes", 3)
     if not isinstance(delay_min, int) or not 0 <= delay_min <= 4:
         raise ValueError("entry_delay_minutes must be an integer between 0 and 4")
+    entry_mode = payload.get("tail_entry_mode", "limit")
+    if entry_mode not in ("limit", "market"):
+        raise ValueError("tail_entry_mode must be 'limit' or 'market'")
     amount_text = f"{amount:.2f}".rstrip("0").rstrip(".")
     target_text = f"{target:.2f}".rstrip("0").rstrip(".")
     entry_text = f"{entry:.3f}".rstrip("0").rstrip(".")
@@ -476,6 +484,7 @@ def save_controls(db_path: str, payload: dict) -> dict:
             ("trading_hours_end_bt", str(end_h)),
             ("entry_delay_enabled", "true" if delay_on else "false"),
             ("entry_delay_minutes", str(delay_min)),
+            ("tail_entry_mode", entry_mode),
         ):
             conn.execute(
                 "INSERT INTO runtime_settings (setting_key, value, updated_ts_ms) VALUES (?, ?, ?) "
