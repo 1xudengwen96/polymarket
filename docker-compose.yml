@@ -1,0 +1,50 @@
+# 生产部署：bot + TimescaleDB（本地开发直接用 SQLite，见 README）
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PM5HFT_MODE: live
+      PM5HFT_ASSETS: btc
+      PM5HFT_DB_URL: postgresql+asyncpg://pm5hft:${POSTGRES_PASSWORD:-pm5hft}@timescale:5432/pm5hft
+    depends_on:
+      timescale:
+        condition: service_healthy
+    volumes:
+      # 首次启动派生的 CLOB API 凭证会回填此文件，后续重启直接复用。
+      - ./.env:/app/.env
+      - ./data:/app/data
+      - ./logs:/app/logs
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    environment:
+      PM5HFT_MODE: live
+      PM5HFT_ASSETS: btc
+      PM5HFT_DB_URL: postgresql+asyncpg://pm5hft:${POSTGRES_PASSWORD:-pm5hft}@timescale:5432/pm5hft
+    command: ["python", "-m", "pm5hft.dashboard", "--host", "0.0.0.0", "--port", "8090"]
+    depends_on:
+      timescale:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8091:8090"
+
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pm5hft
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pm5hft}
+      POSTGRES_DB: pm5hft
+    volumes:
+      - tsdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pm5hft"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  tsdata:

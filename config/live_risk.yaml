@@ -1,0 +1,15 @@
+# 实盘小资金风控档（mode=live 时覆盖 config/risk.yaml 的限额）
+# 场景：92 USDC 本金、每笔 5 USDC（市场最小单量）。限额按"能承受几只天鹅"校准：
+#   单笔天鹅 -4.9 ≈ 权益 5.3%：
+#   未对冲 12% ≈ 2 笔并发持仓（策略正常形态）；第 3 笔被拒
+#   日亏 12% ≈ 2 只天鹅熔断当日；小时亏 6% ≈ 1 只天鹅冷却
+#   回撤 20% kill ≈ 3-4 只天鹅后终止（验证账户可承受上限）
+#   市场占用 20% ≈ 2 笔并发不触发
+
+unhedged_exposure_per_asset_pct: 0.12      # 每资产 12%（当前 50 USDC 余额约 6 USDC），覆盖 5 USDC 最小订单
+max_unhedged_exposure_pct: 0.02            # 下限 2%（配合上行使组合上限=12%）
+max_market_exposure_pct: 0.20              # 2 笔并发（10 USDC）不触发
+max_daily_loss_pct: 0.12
+max_hourly_loss_pct: 0.06
+max_drawdown_pct: 0.20
+max_consecutive_losses: 6                  # 保持默认（tail 赢率 99%+，连亏 6 极罕见）

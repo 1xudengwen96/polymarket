@@ -1,0 +1,102 @@
+# 资产与市场定义（多资产：btc 为主，其余为初筛通过后的纸面扩展）
+assets:
+  btc:
+    enabled: true
+    asset: btc
+    series_slug: btc-up-or-down-5m        # gamma series slug
+    tf_label: "5m"                        # slug 中窗口标签
+    duration_s: 300                       # 窗口长度（秒）
+    slug_template: "{asset}-updown-{tf}-{t_start}"
+    twap_symbol: "btc/usd"                # RTDS/Chainlink 符号
+    twap_lookback_default: 60             # 未读到 cryptoMarketConfig 时的兜底（仅告警用）
+    binance_symbol: "btcusdt"             # 特征 tick 源（RTDS crypto_prices 作后备）
+    rtds_binance_symbol: "btcusdt"
+    gamma_api: "https://gamma-api.polymarket.com"
+    clob_api: "https://clob.polymarket.com"
+  eth:
+    enabled: false
+    asset: eth
+    series_slug: eth-up-or-down-5m
+    tf_label: "5m"
+    duration_s: 300
+    slug_template: "{asset}-updown-{tf}-{t_start}"
+    twap_symbol: "eth/usd"
+    twap_lookback_default: 60
+    binance_symbol: "ethusdt"
+    rtds_binance_symbol: "ethusdt"
+    gamma_api: "https://gamma-api.polymarket.com"
+    clob_api: "https://clob.polymarket.com"
+  sol:
+    enabled: false                 # 停牌（2026-08-16 晚）：纸面 2 天鹅（均在周末，其中 1 只与 BTC 同窗
+                                   # 全市场下杀），主账本 -8.13 为最差资产。静态 EV 为正但周末天鹅
+                                   # 集中，当前 maker 形态下净负贡献。待 taker 入场实验后再评估
+    asset: sol
+    series_slug: sol-up-or-down-5m
+    tf_label: "5m"
+    duration_s: 300
+    slug_template: "{asset}-updown-{tf}-{t_start}"
+    twap_symbol: "sol/usd"
+    twap_lookback_default: 60
+    binance_symbol: "solusdt"
+    rtds_binance_symbol: "solusdt"
+    gamma_api: "https://gamma-api.polymarket.com"
+    clob_api: "https://clob.polymarket.com"
+  xrp:
+    enabled: false                 # 停牌（2026-08-16）：主策略早已停牌（报价背离），反向实验 xrp_fade
+                                   # 也提前终止——maker 0% 成交（结构性吃不到翻盘）、taker 28 连亏
+                                   # 0 翻盘（盈亏平衡 2-3%，实测远低于）。历史 50% 翻盘率未复现，
+                                   # 判定为旧样本尾部巧合。详见 docs/multi-asset-screening.md §1.0
+    asset: xrp
+    series_slug: xrp-up-or-down-5m
+    tf_label: "5m"
+    duration_s: 300
+    slug_template: "{asset}-updown-{tf}-{t_start}"
+    twap_symbol: "xrp/usd"
+    twap_lookback_default: 60
+    binance_symbol: "xrpusdt"
+    rtds_binance_symbol: "xrpusdt"
+    gamma_api: "https://gamma-api.polymarket.com"
+    clob_api: "https://clob.polymarket.com"
+  doge:
+    enabled: false                 # 停牌（2026-08-16 晚）：maker 成交率 9%（32 挂单仅 3 成交），
+                                   # 尾部簿口太薄，挂单基本是摆设。静态 EV +0.72% 为正但吃不到
+    asset: doge
+    series_slug: doge-up-or-down-5m
+    tf_label: "5m"
+    duration_s: 300
+    slug_template: "{asset}-updown-{tf}-{t_start}"
+    twap_symbol: "doge/usd"
+    twap_lookback_default: 60
+    binance_symbol: "dogeusdt"
+    rtds_binance_symbol: "dogeusdt"
+    gamma_api: "https://gamma-api.polymarket.com"
+    clob_api: "https://clob.polymarket.com"
+  bnb:
+    enabled: false                 # 停牌（2026-08-16 晚）：1 天鹅（13:25 平坦窗口过度自信模式，
+                                   # 现货仅动 0.002% 却定价 98.1¢）+ maker 成交率 25%，
+                                   # 主账本 -4.54 净负贡献
+    asset: bnb
+    series_slug: bnb-up-or-down-5m
+    tf_label: "5m"
+    duration_s: 300
+    slug_template: "{asset}-updown-{tf}-{t_start}"
+    twap_symbol: "bnb/usd"
+    twap_lookback_default: 60
+    binance_symbol: "bnbusdt"
+    rtds_binance_symbol: "bnbusdt"
+    gamma_api: "https://gamma-api.polymarket.com"
+    clob_api: "https://clob.polymarket.com"
+  hype:
+    enabled: false                 # 停牌（2026-08-16 晚）：maker 成交率 18%（22 挂单仅 4 成交），
+                                   # 静态 EV +1.10% 全场最强但吃不到——待 taker 入场实验后再评估
+    asset: hype
+    series_slug: hype-up-or-down-5m
+    tf_label: "5m"
+    duration_s: 300
+    slug_template: "{asset}-updown-{tf}-{t_start}"
+    twap_symbol: "hype/usd"
+    twap_lookback_default: 60
+    binance_symbol: "hypeusdt"
+    rtds_binance_symbol: "hypeusdt"
+    gamma_api: "https://gamma-api.polymarket.com"
+    clob_api: "https://clob.polymarket.com"

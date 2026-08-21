@@ -1,0 +1,20 @@
+# 执行参数（docs/07-execution-engine.md）
+latency_ms: 250                      # 模拟/预算的端到端延迟
+maker_replace_interval_ms: 500       # 挂单重评周期
+maker_max_shift_ticks: 2             # 超过则 REPLACE
+reconcile_timeout_s: 5               # UNKNOWN 状态等待 User WS 裁决
+retry_max: 2
+retry_backoff_base_s: 0.5
+heartbeat_interval_s: 10             # CLOB POST /heartbeats
+watchdog_max_gap_s: 3                # 本地看门狗
+cancel_deadline_before_end_s: 5      # t_end-5s 全撤
+hard_deadline_before_end_s: 10       # t_end-10s 起禁新开仓
+order_batch_max: 15
+cancel_batch_max: 1000
+
+# 本地令牌桶（镜像 CLOB Standard 档；响应头会校准）
+rate_limit:
+  order_rate_per_s: 40
+  order_burst: 60
+  cancel_rate_per_s: 80
+  cancel_burst: 120

@@ -1,0 +1,28 @@
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- secrets / env ---
+.env
+*.env.local
+
+# --- runtime data ---
+data/
+logs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- research scratch ---
+research/
+# 打包产物/大文件不上传
+*.zip

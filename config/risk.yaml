@@ -1,0 +1,30 @@
+# 风控参数（docs/06-risk-engine.md §8）
+account_equity: auto                 # auto = 从 balance-allowance 读取；paper 用下方起始资金
+
+max_initial_exposure: 50             # USDC
+max_unhedged_exposure_pct: 0.01      # equity × 1%
+max_complete_set_exposure_pct: 0.05
+max_market_exposure_pct: 0.10
+max_window_notional: 200
+
+max_daily_loss_pct: 0.010     # 单日亏损熔断（基础 1%，实际 = 基础 × √资产数）
+max_hourly_loss_pct: 0.005    # 单小时冷却（基础 0.5%，实际 = 基础 × √资产数）
+# 每资产并发敞口（占权益比）：组合未对冲总上限 = max(max_unhedged_exposure_pct,
+# unhedged_exposure_per_asset_pct × 启用资产数)。动态计算，随资产数自动扩展
+# （当前 7 资产 × 0.5% = 3.5% = 35 USDC @1000 本金）
+unhedged_exposure_per_asset_pct: 0.005
+max_consecutive_losses: 6
+cooloff_windows: 12
+max_holding_time_s: 330              # 绝不跨窗口（硬铁律）
+max_drawdown_pct: 0.03
+
+paper_starting_equity: 1000
+
+# 熔断器
+breakers:
+  book_stale_ms: 1500
+  twap_stale_s: 5
+  tick_storm_n: 3                    # 1s 内 tick_size_change 次数
+  fill_anomaly_ticks: 3
+  api_error_rate: 0.20
+  cooloff_s: 60

@@ -1,0 +1,5 @@
+# 实盘人工确认开关。
+# 开启 LIVE 需要 BOTH:
+#   1) 本文件 allow_live: true（人工编辑）
+#   2) 环境变量 PM5HFT_LIVE=true 且提供 POLYMARKET_PRIVATE_KEY
+allow_live: true

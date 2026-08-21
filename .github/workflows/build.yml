@@ -1,0 +1,56 @@
+name: Build pm5hft (Windows exe + macOS)
+
+# 自动在云端的 Windows 和 macOS 真机上一键打包。
+# 用法：
+#   1. 把本项目推到 GitHub（新建仓库即可，全公开/私有都行）
+#   2. 每次 push 或手动触发后，在 Actions 页面下载两个产物：
+#        pm5hft-windows-latest.zip  → 里面的 pm5hft.exe（Windows 用）
+#        pm5hft-macos-latest.zip    → 里面的 pm5hft（macOS 用）
+# 这是"没有 Mac 电脑也能拿到 Mac 版"的官方解法（macos-latest 就是一台真 Mac）。
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: # 也支持在 GitHub 网页上手动点"Run workflow"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖 + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pyinstaller
+
+      - name: PyInstaller 打包（onefile）
+        run: pyinstaller packaging/pm5hft.spec --noconfirm --distpath dist --workpath build
+
+      - name: 组装交付目录（config/artifacts 与可执行文件放一起）
+        shell: bash
+        run: |
+          cp -r config artifacts dist/
+          cp .env.example README.md dist/
+          cat > dist/使用说明.txt <<'EOF'
+          pm5hft 独立版
+            双击 pm5hft(.exe)           → 启动机器人（默认 paper 模式）
+            pm5hft(.exe) dashboard      → 启动监控面板，浏览器打开 http://127.0.0.1:8090
+            实盘：复制 .env.example 为 .env 填私钥 + config/live.yaml 开 allow_live:true
+            注意：config/、artifacts/ 必须和可执行文件放同一文件夹
+            macOS 首次运行被拦截：右键 → 打开；或 xattr -d com.apple.quarantine pm5hft
+          EOF
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: pm5hft-${{ matrix.os }}
+          path: dist/*

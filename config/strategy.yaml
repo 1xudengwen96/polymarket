@@ -1,0 +1,113 @@
+# 策略参数（docs/04-strategy-engine.md §10；Phase 2 起被 StrategyEngine 消费）
+schedule:                           # 交易日程（Dashboard 可运行时覆盖；默认关闭）
+  daily_profit_target_usdt: 0       # 每日止盈目标（USDT）：当日已实现利润 ≥ 该值 → 当日休息
+                                    #   0 = 关闭。计数随机器人启动清零，北京时间 0 点重置；
+                                    #   休息期间只管理已有持仓，不再开新仓，次日自动恢复。
+  trading_hours_enabled: false      # 是否启用北京时间交易时段（false=全天交易）
+  trading_hours_start_bt: 9         # 交易开始（北京时间小时 0-23）
+  trading_hours_end_bt: 21          # 交易结束（北京时间小时 0-23；支持跨夜，如 22→6）
+books:                              # 簿口数据源（2026-08-17 实盘教训：CLOB WS 流投递延迟
+  rest_poll_enabled: true           #   中位 3s / 行情剧烈时 10-23s，入场决策用过期簿口 →
+  rest_poll_interval_s: 1.0         #   挂单错过机会。REST /books 走撮合引擎真实簿口
+  rest_poll_timeout_s: 5.0          #   （延迟 ~0.3-0.6s），每秒轮询当前窗口 token；
+                                    #   REST 失败自动回退 WS 流簿口（无数据丢失）。
+entry:
+  initial_position_pct: 0.002        # 初始仓位 = equity × 0.2%
+  min_initial_notional: 5            # USDC
+  max_initial_notional: 50           # USDC
+  entry_min_net_edge: 0.04           # 扣费后最小 Net Edge
+  entry_min_gross_edge: 99           # 校准概率 - 市场概率（99=禁用方向性入场；尾部策略不受此限制。
+                                     # 依据：11天回测方向性入场全亏，尾部买方是唯一正期望策略）
+  entry_min_age_s: 5                 # 开盘后最少等待
+  entry_min_remaining_s: 30          # 收盘前最少剩余（Phase 3.5 研究：edge 集中在 T-60 桶内）
+  entry_max_remaining_s: 0           # 入场时间上限（秒）；0=不限。T-60 变体设为 60
+  maker_fair_margin: 0.0             # >0 时挂单价 = 模型公允价 - margin（吃价差 maker 变体）
+  entry_order_ttl_s: 20              # maker 单寿命
+  max_entries_per_side: 1            # 铁律：每窗口每方向最多 1 次建仓
+
+exit:
+  exit_min_profit_ticks: 3           # 盈利 ≥3 tick 即可考虑退出
+  exit_mode: maker                   # taker=FAK市价卖 | maker=挂entry+1tick post-only（11天A/B胜出）
+  exit_patience_s: 3                 # post-only 挂卖后转 FAK 的等待
+  stop_loss_ticks: 6
+  stop_remaining_s: 15               # 裸仓强制处理线
+  exit_confidence_turn: 0.08         # 模型反转离场阈值
+
+hedge:
+  hedge_min_locked_pct: 0.03         # 净锁定利润 ≥3%
+  hedge_safety_margin: 0.015
+  settle_sell_min_price: 0.995
+
+tail_capture:
+  enabled: true
+  buffer: 0.001                  # 校准概率需高出市场价的最小缓冲
+  tail_risk_buffer: 0.0          # 与 buffer 合计 = 0.1%
+  use_model_gate: false          # 临时关闭模型闸门（纯价格闸门）：过夜 17/17 触碰全胜而
+                                 # 模型特征漂移全部误拒（cal 仅 0.90-0.975 @ 99¢）。
+                                 # 待实盘特征重训（scripts/retrain_live.py，≥300 窗口）后恢复 true
+  max_tail_notional: 100
+  fixed_order_notional: 5        # Dashboard 未设置时的默认单笔金额；实际数量向上取整，确保名义金额 >= 此值
+  entry_price_min: 0.98          # 尾盘进场"最高可接受买价"（0.50-0.999；Dashboard 可覆盖）。
+                                 # 挂单价不高于它：市场价 ≥该值才参与，成交价不会超过它。
+                                 # 默认 0.98 ≈ 原行为；设 0.80 = 只在市场价 ≥80¢ 时参与、且成交价 ≤80¢
+  low_price_gate_threshold: 0.95 # 进场价低于该值时强制启用模型闸门（cal ≥ ask+buffer 才买）。
+                                 # 防纯价格闸门在低价位买贵（实盘案例：74% 概率花 84¢ 的负 EV 单）
+  exit_price: 0                  # 尾部止盈出场价（0.50-0.999；Dashboard 可覆盖；0 = 关闭）。
+                                 # >0 时：持仓方 bid ≥ 出场价 → FAK 卖出落袋（替代持有到结算）。
+                                 # 默认 0 = 保持原行为（持有到结算，数据结论见 _exit_candidate 注释）
+  auto_hedge: false              # 尾仓持仓期间是否自动对冲（买对侧冷门方锁利）。false = 关闭：
+                                 # 纯 进场→出场/结算 流程（赢单拿满利润，输单全额承担）
+  tail_min_remaining_s: 10
+
+tail_hedge:
+  enabled: true
+  max_cost_pct: 0.20                 # 保险成本 ≤ 主头寸预期利润的 20%
+  max_price: 0.05
+  max_notional: 5
+
+xrp_fade:                            # 反向实验模块（已终止，2026-08-16 晚，保留配置供复盘）
+  enabled: false                     # 结论：maker 0% 成交（翻盘向上跳，挂单结构性吃不到）；
+                                     # taker 28 连亏 0 翻盘（盈亏平衡 2-3%，实测远低于）。
+                                     # 历史 3/6 翻盘率未复现 → 判定为旧样本尾部巧合，实验关闭
+  assets: [xrp]                      # 实验资产白名单；这些资产主策略（tail/状态机/arb）一律跳过
+  mode: taker                        # taker=FAK 直接吃 ask（2026-08-16 改：maker 挂 bid+1tick
+                                     #   实测 18 单 0% 成交——翻盘是向上跳，挂单在下方结构性吃不到；
+                                     #   且只有向下扫穿才成交=逆向选择。吃单是唯一能上车的方式）
+  max_longshot_price: 0.03           # 冷门方 ask 上限（超出不买；3-5¢ 区翻盘盈亏平衡率 3-5%）
+  position_shares: 5                 # 每笔固定 5 股（≈0.1-0.15 USDC）：最大化数据点（~200/天）、
+                                     #   最坏日亏 ~30 USDC 不触发实验熔断；收益等比缩小不影响统计
+  position_notional: 5               # （maker 模式旧口径，保留待用）
+  risk_overrides:                    # 实验独立风控预算（√n 缩放后：日亏 5%×1000×√7≈132）
+    max_daily_loss_pct: 0.05         # 实验账户日亏上限（独立于主账本）
+    max_hourly_loss_pct: 0.02
+    max_consecutive_losses: 100      # 冷门方连胜率极低，连亏冷却放很宽（100 连亏≈止损离场）
+    max_drawdown_pct: 0.15           # 实验账户回撤 15% → kill（仅冻结实验，不动主策略）
+
+mid_capture:                         # 中段买方实验（已终止，2026-08-17 凌晨，保留配置供复盘）
+  enabled: false                     # 结论：36 仓位 3 天鹅（8.3% 败率）> 盈亏平衡（hold 6.5% /
+                                     # profit3 3.2%），两变体均转负（hold -4.75 / profit3 -1.61）。
+                                     # 94-96¢ 的"0 败"被证伪为 59 样本侥幸；profit3 只能逃"先涨
+                                     # 3 tick 再崩"的天鹅，对"进仓即反转"无效（02:05 窗口实锤）
+  assets: [btc]                      # 与主 tail 同资产并行；同窗口两模块互斥（先占者赢）
+  zone: [0.94, 0.96]                 # 买入价格区间（含下界，不含上界）
+  entry_max_remaining_s: 60          # 剩余 ≤60s 才允许（数据：T-60 中段 +1.8%，T-30/T-10 为负）
+  position_notional: 5               # 每笔 5 USDC（≈5 股，maker bid+1tick）
+  order_ttl_s: 30                    # maker 挂单寿命：到期不成交自动撤单重评（防阻塞主 tail）
+  exit_mode: ab                      # 出场 A/B 对照（按 market_id 奇偶各半，订单 meta 记录归属）：
+                                     #   hold=持有到结算（原口径） | profit3=+3tick 出场（复刻 tail：
+                                     #   价格越过 0.96 后 tick 变 0.001，出场线几乎贴成本，冲刺即 FAK 落袋）
+                                     # 依据：BTC 天鹅推演——mid 出场线在崩盘前 18s 被击穿而 tail 从未击穿
+  risk_overrides:                    # 实验独立风控预算（同 xrp_fade 模式）
+    max_daily_loss_pct: 0.05
+    max_hourly_loss_pct: 0.02
+    max_consecutive_losses: 100
+    max_drawdown_pct: 0.15
+
+arb:
+  enabled: false                 # 禁用：纸面撮合下 FOK 双腿竞态造成单腿裸仓连锁乱单
+                                 # （XRP 120 股乱仓虚增 +15.6 PnL，2026-08-16 实锤）。
+                                 # 实盘前需重写（双腿同步提交 + 单腿失败立即对冲）
+
+fees:                                # 保守默认（实盘按市场 feeSchedule 读取）
+  taker_fee_bps: 1.0                 # 1 bps
+  maker_rebate_bps: 0.0
