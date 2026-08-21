@@ -535,10 +535,16 @@ class StrategyEngine:
                 extra_meta={"stop": False},
                 reason=f"tail exit @{bid_d} (target {self.tail_exit_price})",
             )
-        # 止损：bid ≤ 止损价 → 先市价卖；卖单确认未成交后切对冲兜底
+        # 止损：bid ≤ 止损价 → 先市价卖；卖单确认未成交后切对冲兜底。
+        # 在途锁（exit_pending）防重复下单 + 防"对冲与在途卖单"竞态：
+        # 卖单失败（on_order_expired 收到 stop 标记）→ exit_pending 复位 + stop_sell_attempted，
+        # 之后才允许对冲。
         if self.tail_stop_price > 0 and bid_d <= self.tail_stop_price:
             if pos.stop_sell_attempted:
                 return self._tail_stop_hedge(f, rec, pos, token_side, qty, remaining)
+            if pos.exit_pending:
+                return Decision.noop("tail stop: sell pending")
+            pos.exit_pending = True
             return Decision(
                 action=f"EXIT_{token_side}", side="SELL", token_side=token_side,
                 price=str(bid_d), qty=str(qty), tif="FAK", post_only=False,
@@ -865,8 +871,9 @@ class StrategyEngine:
                 pos.down_qty = max(Decimal("0"), pos.down_qty - qty)
                 if pos.down_qty == 0:
                     pos.avg_down = None
-            # 尾部止盈出场清仓 → 释放按资产锁，允许下一窗口重新入场
-            if pos.tail_held and pos.up_qty == 0 and pos.down_qty == 0:
+            # 尾部出场清仓 → 释放按资产锁，允许下一窗口重新入场。
+            # 止损卖单（meta.stop=true）例外：保留锁，防同窗口立刻重进崩盘仓位
+            if pos.tail_held and pos.up_qty == 0 and pos.down_qty == 0 and not meta.get("stop"):
                 pos.tail_held = False
                 pos.tail_pending = False
                 if self._active_tail_market.get(pos.asset) == market_id:

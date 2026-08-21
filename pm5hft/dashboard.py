@@ -242,6 +242,7 @@ async function tick(){
 	document.getElementById('tailExit').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('tailStop').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('hoursOn').addEventListener('change',()=>{controlsDirty=true;saveControls()});
+	document.getElementById('entryMode').addEventListener('change',()=>{controlsDirty=true;saveControls()});
 	document.getElementById('hoursStart').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('hoursEnd').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('delayOn').addEventListener('change',()=>{controlsDirty=true});

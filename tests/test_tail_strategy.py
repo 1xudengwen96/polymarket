@@ -522,3 +522,50 @@ def test_tail_complete_set_holds_after_stop_hedge():
     d2 = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
                              remaining_s=60.0), rec, wt)
     assert d2.action == "NOOP", d2
+
+
+def test_tail_stop_no_duplicate_sell_while_pending():
+    """在途锁：止损卖单发出后、未确认前不再重复下单（防重复/竞态）。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.85"), Decimal("0.95"),
+                             False, 0, "limit", Decimal("0.45"))
+    eng.on_fill(7, "UP", Decimal("5.56"), Decimal("0.85"), "BUY", {"module": "tail_capture"})
+    d1 = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                             remaining_s=60.0), rec, wt)
+    assert d1.action == "EXIT_UP"
+    # 卖单在途：下一 tick 不得再发卖单，也不得切对冲
+    d2 = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                             remaining_s=60.0), rec, wt)
+    assert d2.action == "NOOP", d2
+    assert eng.positions[7].exit_pending is True
+    # 卖单确认失败 → 切对冲
+    eng.on_order_expired(7, {"stop": True})
+    d3 = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                             remaining_s=60.0), rec, wt)
+    assert d3.action == "HEDGE_DOWN", d3
+
+
+def test_tail_stop_fill_keeps_asset_lock():
+    """止损卖单成交后保留资产锁：同窗口不得立刻重进崩盘仓位。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.85"), Decimal("0.95"),
+                             False, 0, "limit", Decimal("0.45"))
+    eng.on_fill(7, "UP", Decimal("5.56"), Decimal("0.85"), "BUY", {"module": "tail_capture"})
+    d = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                            remaining_s=60.0), rec, wt)
+    assert d.action == "EXIT_UP"
+    # 止损卖单成交（meta stop）
+    eng.on_fill(7, "UP", Decimal("5.56"), Decimal("0.44"), "SELL", {"module": "exit", "stop": True})
+    pos = eng.positions[7]
+    assert pos.up_qty == 0
+    assert pos.tail_held is True          # 锁保留
+    assert 7 in eng._active_tail_market.values()   # 资产锁未释放
+    # 同窗口重进被拒
+    d2 = eng.decide(features(up_ask=0.89, up_bid=0.88), rec, wt)
+    assert d2.action == "NOOP", d2

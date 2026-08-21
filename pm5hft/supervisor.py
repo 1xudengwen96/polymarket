@@ -766,8 +766,9 @@ class Supervisor:
         ok, reason = await self.execution.submit(intent)
         if not ok:
             self.log.warning("order rejected", action=d.action, reason=reason)
-            if d.action.startswith("ENTER"):
-                self.strategy.on_order_expired(rec.market_id)
+            # 同步提交失败：复位 pending 锁（含止损卖单 exit_pending，带 stop 标记
+            # → 策略切对冲兜底），防锁死
+            self.strategy.on_order_expired(rec.market_id, d.extra_meta)
 
     async def _dispatch_arb(self, rec, d) -> None:
         up_price, down_price = d.price.split("/")
