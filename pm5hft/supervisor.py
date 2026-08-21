@@ -118,6 +118,7 @@ class Supervisor:
         self._entry_delay_enabled = bool(config.s("tail_capture.entry_delay_enabled", False))
         self._entry_delay_min = int(config.s("tail_capture.entry_delay_minutes", 3))
         self._entry_mode = str(config.s("tail_capture.entry_mode", "limit"))
+        self._stop_price = Decimal(str(config.s("tail_capture.stop_loss_price", 0)))
         self._last_risk_state: str | None = None  # 发布给 Dashboard 显示的风控状态
         # 提速缓存：runtime_settings 1s 读一次（面板改动最多 1s 生效）；
         # 成交回调免 DB 读订单 meta（同订单部分成交多次时省读+解析）
@@ -223,9 +224,17 @@ class Supervisor:
         return None
 
     # ── 成交回写：策略/风控状态 ───────────────────────────────
-    def _on_order_closed(self, client_order_id: str, market_id: int, state: str) -> None:
-        """挂单过期/撤单：若为未成交的入场单 → 允许策略重新评估。"""
-        self.strategy.on_order_expired(market_id)
+    def _on_order_closed(self, client_order_id: str, market_id: int, state: str,
+                         meta_raw: str | None = None) -> None:
+        """挂单过期/撤单：若为未成交的入场单 → 允许策略重新评估。
+        止损卖单（meta.stop=true）未成交 → 策略标记，后续切对冲兜底。"""
+        meta: dict[str, Any] = {}
+        if meta_raw:
+            try:
+                meta = json.loads(meta_raw)
+            except json.JSONDecodeError:
+                meta = {}
+        self.strategy.on_order_expired(market_id, meta)
 
     async def _on_fill_event(self, fill: FillEvent) -> None:
         # 提速：同订单多次成交（部分成交）免重复 DB 读订单 + JSON 解析
@@ -560,6 +569,13 @@ class Supervisor:
         # 进场方式（Dashboard 可切换）：limit=挂单 | market=市价吃单
         entry_mode = str(values.get("tail_entry_mode", self.config.s("tail_capture.entry_mode", "limit")))
         entry_mode = entry_mode if entry_mode == "market" else "limit"
+        # 止损价（Dashboard 可覆盖；0 = 关闭）
+        try:
+            stop_price = Decimal(str(values.get(
+                "tail_stop_price", self.config.s("tail_capture.stop_loss_price", 0))))
+        except Exception:  # noqa: BLE001
+            stop_price = Decimal("0")
+        stop_price = max(Decimal("0"), min(Decimal("0.999"), stop_price))
         # 熔断解锁请求（Dashboard「解锁熔断」按钮）：一次性，处理完置回 0
         if values.get("reset_kill_request", "0").lower() in ("1", "true"):
             self.risk.reset_kill()
@@ -628,7 +644,7 @@ class Supervisor:
                    or rest_reason != self._rest_reason or entry_price != self._tail_entry_price
                    or exit_price != self._tail_exit_price
                    or delay_on != self._entry_delay_enabled or delay_min != self._entry_delay_min
-                   or entry_mode != self._entry_mode)
+                   or entry_mode != self._entry_mode or stop_price != self._stop_price)
         was_enabled = self._runtime_enabled
         self._runtime_enabled = effective
         self._runtime_notional = notional
@@ -637,9 +653,10 @@ class Supervisor:
         self._entry_delay_enabled = delay_on
         self._entry_delay_min = delay_min
         self._entry_mode = entry_mode
+        self._stop_price = stop_price
         self._profit_target_hit = target_hit
         self.strategy.set_runtime_controls(effective, notional, entry_price, exit_price,
-                                           delay_on, delay_min, entry_mode)
+                                           delay_on, delay_min, entry_mode, stop_price)
         if rest_reason != self._rest_reason:
             self._rest_reason = rest_reason
             try:
@@ -651,7 +668,8 @@ class Supervisor:
                           fixed_order_notional=str(notional), rest_reason=rest_reason,
                           profit_target=str(target), session_pnl=str(self._bt_session_pnl),
                           tail_entry_price=str(entry_price), tail_exit_price=str(exit_price),
-                          entry_delay=[delay_on, delay_min], entry_mode=entry_mode,
+                          tail_stop_price=str(stop_price), entry_delay=[delay_on, delay_min],
+                          entry_mode=entry_mode,
                           trading_hours=[start_h, end_h] if hours_on else None)
         if was_enabled and not effective:
             entry_modules = {"entry", "tail_capture", "xrp_fade", "mid_capture", "arb"}
@@ -693,19 +711,27 @@ class Supervisor:
                 expires_at_ms=expires, meta={"module": "entry", "token_side": token_side},
             )
         elif d.action.startswith("HEDGE"):
-            expires = t_end_ms - 5_000
+            tif = d.tif or "GTD"
+            meta = {"module": "hedge", "token_side": token_side}
+            if d.extra_meta:
+                meta.update(d.extra_meta)
             intent = OrderIntent(
                 market_id=rec.market_id, token_id=token_map[token_side], side="BUY",
-                price=Decimal(d.price), qty=Decimal(d.qty), tif="GTD", post_only=True,
-                expires_at_ms=expires, meta={"module": "hedge", "token_side": token_side},
+                price=Decimal(d.price), qty=Decimal(d.qty), tif=tif,
+                post_only=d.post_only if d.post_only is not None else True,
+                expires_at_ms=t_end_ms - 5_000 if tif == "GTD" else None,
+                meta=meta,
             )
         elif d.action.startswith("EXIT"):
+            meta = {"module": "exit", "token_side": token_side}
+            if d.extra_meta:
+                meta.update(d.extra_meta)
             intent = OrderIntent(
                 market_id=rec.market_id, token_id=token_map[token_side], side="SELL",
                 price=Decimal(d.price), qty=Decimal(d.qty), tif=d.tif or "FAK",
                 post_only=d.post_only,
                 expires_at_ms=t_end_ms - 5_000 if d.tif == "GTD" else None,
-                meta={"module": "exit", "token_side": token_side},
+                meta=meta,
             )
         elif d.action.startswith("TAIL_CAPTURE"):
             tif = d.tif or "GTD"

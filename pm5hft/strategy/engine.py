@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, InvalidOperation
+from typing import Any
 
 from ..config import Config
 from ..logging_setup import get_logger
@@ -43,6 +44,7 @@ class PositionState:
     tail_held: bool = False  # 尾部持仓（免止损，持有到结算）
     tail_pending: bool = False  # 尾部挂单已发出（防每秒重发）
     exit_pending: bool = False  # maker 出场挂单已发出（防每秒重发）
+    stop_sell_attempted: bool = False  # 止损市价卖单已发出且未成交 → 切对冲兜底
     fade_held: bool = False  # xrp_fade 实验持仓（免止损/免出场，持有到结算）
     fade_pending: bool = False  # xrp_fade 挂单已发出（防每秒重发）
     mid_held: bool = False  # mid_capture 实验持仓（免止损/免对冲，持有到结算）
@@ -63,6 +65,7 @@ class Decision:
     reason: str | None = None
     reject_code: str | None = None
     exit_mode: str | None = None   # mid_capture 出场变体（hold|profit3），dispatch 写入订单 meta
+    extra_meta: dict[str, Any] | None = None  # 追加进订单 meta（如止损标记 {"stop": True}）
 
     @staticmethod
     def noop(reason: str | None = None, reject_code: str | None = None) -> Decision:
@@ -125,6 +128,8 @@ class StrategyEngine:
         self.tail_entry_delay_min = int(config.s("tail_capture.entry_delay_minutes", 3))
         # 进场方式（Dashboard 可切换）：limit=挂单 post-only；market=市价 FAK 吃单
         self.tail_entry_mode = str(config.s("tail_capture.entry_mode", "limit"))
+        # 止损价（0 = 关闭）：持仓方 bid ≤ 止损价 → 市价卖锁亏；卖不出自动买对侧对冲兜底
+        self.tail_stop_price = Decimal(str(config.s("tail_capture.stop_loss_price", 0)))
         # 反向实验独立风控实例：实验盈亏/连亏/熔断与主账本完全隔离
         # （冷门方胜率极低，若共享风控会以连亏冷却/日亏限额污染主策略）
         self.fade_assets: list[str] = [
@@ -151,7 +156,8 @@ class StrategyEngine:
                              tail_exit_price: Decimal | None = None,
                              entry_delay_enabled: bool | None = None,
                              entry_delay_minutes: int | None = None,
-                             tail_entry_mode: str | None = None) -> None:
+                             tail_entry_mode: str | None = None,
+                             tail_stop_price: Decimal | None = None) -> None:
         self.auto_trading_enabled = enabled
         self.fixed_order_notional = fixed_order_notional
         if tail_entry_price is not None:
@@ -164,6 +170,8 @@ class StrategyEngine:
             self.tail_entry_delay_min = max(0, min(4, int(entry_delay_minutes)))
         if tail_entry_mode is not None:
             self.tail_entry_mode = tail_entry_mode if tail_entry_mode == "market" else "limit"
+        if tail_stop_price is not None:
+            self.tail_stop_price = max(Decimal("0"), min(Decimal("0.999"), tail_stop_price))
 
     def decide(self, f: dict, rec, wt) -> Decision:
         """f: FeatureStore.features() 输出；rec: MarketRecord；wt: WindowTwap。"""
@@ -175,10 +183,10 @@ class StrategyEngine:
         into = float(f.get("into_window_s") or 0.0)
         ptb_ready = wt is not None and wt.ptb is not None and wt.self_result is None
 
-        # 可选尾部止盈出场：出场价 > 0 时，持仓方 bid ≥ 出场价 → 卖出落袋。
-        # 放在 PTB 闸门之前（出场只需盘口，无需 PTB；且自动交易关闭时也要能出场）。
-        if pos.tail_held and self.tail_exit_price > 0:
-            d = self._tail_exit(f, rec, pos, remaining)
+        # 可选尾部止盈/止损：出场价 > 0 或止损价 > 0 时管理持仓。
+        # 放在 PTB 闸门之前（只需盘口；且自动交易关闭时也要能出场/止损）。
+        if pos.tail_held and (self.tail_exit_price > 0 or self.tail_stop_price > 0):
+            d = self._tail_exit_or_stop(f, rec, pos, remaining)
             if d.action != "NOOP":
                 return d
 
@@ -497,11 +505,17 @@ class StrategyEngine:
         return Decision.noop("locked profit: hold to settlement")
 
     # ── 模块四/五/六 ─────────────────────────────────────────
-    def _tail_exit(self, f: dict, rec, pos: PositionState, remaining: float) -> Decision:
-        """可选尾部止盈出场：持仓方 bid ≥ 出场价 → FAK 卖出落袋（替代持有到结算）。
+    def _tail_exit_or_stop(self, f: dict, rec, pos: PositionState, remaining: float) -> Decision:
+        """尾部止盈/止损管理（替代持有到结算，可选启用）。
 
-        出场价 = 0 时不启用（默认：持有到结算，数据结论见 _exit_candidate 注释）。
+        - 出场价 > 0：持仓方 bid ≥ 出场价 → FAK 卖出落袋（止盈）。
+        - 止损价 > 0：持仓方 bid ≤ 止损价 → FAK 市价卖出锁亏（"反向单"）；
+          卖单未成交（on_order_expired 收到 stop 标记）→ 自动买对侧对冲兜底
+          （持有 YES 就买 NO 凑完整组合，锁死当前亏损不再扩大）。
+        - 完整组合（YES+NO 都持有）→ 持有到结算（对冲已完成锁亏）。
         """
+        if pos.up_qty > 0 and pos.down_qty > 0:
+            return Decision.noop("tail: complete set, hold to settlement")
         if pos.up_qty > 0:
             bid = f.get("up_bid")
             token_side, qty = "UP", pos.up_qty
@@ -509,17 +523,60 @@ class StrategyEngine:
             bid = f.get("down_bid")
             token_side, qty = "DOWN", pos.down_qty
         else:
-            return Decision.noop("tail exit: no position")
+            return Decision.noop("tail exit/stop: no position")
         if bid is None:
-            return Decision.noop("tail exit: no book")
+            return Decision.noop("tail exit/stop: no book")
         bid_d = Decimal(str(bid))
-        if bid_d < self.tail_exit_price:
-            return Decision.noop(f"tail exit: bid {bid_d} < target {self.tail_exit_price}")
-        # 已到出场价：taker FAK 卖出（价 = 当前 bid，≥ 出场价），落袋离场
+        # 止盈：bid ≥ 出场价 → FAK 市价卖出落袋
+        if self.tail_exit_price > 0 and bid_d >= self.tail_exit_price:
+            return Decision(
+                action=f"EXIT_{token_side}", side="SELL", token_side=token_side,
+                price=str(bid_d), qty=str(qty), tif="FAK", post_only=False,
+                extra_meta={"stop": False},
+                reason=f"tail exit @{bid_d} (target {self.tail_exit_price})",
+            )
+        # 止损：bid ≤ 止损价 → 先市价卖；卖单确认未成交后切对冲兜底
+        if self.tail_stop_price > 0 and bid_d <= self.tail_stop_price:
+            if pos.stop_sell_attempted:
+                return self._tail_stop_hedge(f, rec, pos, token_side, qty, remaining)
+            return Decision(
+                action=f"EXIT_{token_side}", side="SELL", token_side=token_side,
+                price=str(bid_d), qty=str(qty), tif="FAK", post_only=False,
+                extra_meta={"stop": True},
+                reason=f"tail stop @{bid_d} (limit {self.tail_stop_price})",
+            )
+        return Decision.noop(f"tail: hold (bid {bid_d})")
+
+    def _tail_stop_hedge(self, f: dict, rec, pos: PositionState, held_side: str, qty: Decimal,
+                         remaining: float) -> Decision:
+        """止损兜底：市价卖单未成交 → 买对侧锁亏（FAK taker，立即成交）。
+
+        持有 YES 卖不出 → 买 NO 凑完整组合（成本 ≈ 当前对侧 ask），
+        锁死当前亏损，价格继续崩也不扩大。
+        """
+        if held_side == "UP":
+            opp_ask = f.get("down_ask")
+            opp_side = "DOWN"
+        else:
+            opp_ask = f.get("up_ask")
+            opp_side = "UP"
+        if opp_ask is None:
+            return Decision.noop("tail stop hedge: no opposite book")
+        opp_d = Decimal(str(opp_ask))
+        ctx = PreTradeContext(
+            market_id=rec.market_id, asset=rec.asset, kind="stop_hedge", side="BUY",
+            token_side=opp_side, qty=qty, price=opp_d,
+            taker_fee=self._taker_fee(rec), remaining_s=remaining, ptb_ready=True,
+            bypass_account_limits=True,
+        )
+        check = self.risk.pre_trade(ctx)
+        if not check.ok:
+            return Decision.noop(f"tail stop hedge: {check.reason}", check.blocked_code)
         return Decision(
-            action=f"EXIT_{token_side}", side="SELL", token_side=token_side,
-            price=str(bid_d), qty=str(qty), tif="FAK", post_only=False,
-            reason=f"tail exit @{bid_d} (target {self.tail_exit_price})",
+            action=f"HEDGE_{opp_side}", side="BUY", token_side=opp_side,
+            price=str(opp_d), qty=str(qty), tif="FAK", post_only=False,
+            extra_meta={"stop": True},
+            reason=f"tail stop hedge @{opp_d} (stop {self.tail_stop_price})",
         )
 
     def _tail_capture(self, f: dict, rec, wt, pos: PositionState, remaining: float) -> Decision:
@@ -826,11 +883,14 @@ class StrategyEngine:
             self.risk.on_fill(market_id, token_side, qty, price, side)
         self._update_state(pos)
 
-    def on_order_expired(self, market_id: int) -> None:
+    def on_order_expired(self, market_id: int, order_meta: dict | None = None) -> None:
         """挂单过期/取消且无持仓 → 允许重新评估入场。"""
         pos = self.positions.get(market_id)
         if pos is None:
             return
+        # 止损市价卖单未成交（FAK 被拒/无流动性）→ 标记，后续决策切对冲兜底
+        if order_meta and order_meta.get("stop") and pos.tail_held:
+            pos.stop_sell_attempted = True
         pos.tail_pending = False
         pos.exit_pending = False
         pos.fade_pending = False

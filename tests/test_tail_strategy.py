@@ -448,3 +448,77 @@ def test_tail_entry_mode_limit_default():
     d = eng.decide(features(up_ask=0.99, up_bid=0.989), rec, wt)
     assert d.action == "TAIL_CAPTURE_UP", d
     assert d.tif == "GTD" and d.post_only is True
+
+
+def test_tail_stop_sells_at_market():
+    """止损：bid ≤ 止损价 → FAK 市价卖出（反向单），meta 带 stop 标记。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.85"), Decimal("0.95"),
+                             False, 0, "limit", Decimal("0.45"))
+    eng.on_fill(7, "UP", Decimal("5.56"), Decimal("0.85"), "BUY", {"module": "tail_capture"})
+    d = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                            remaining_s=60.0), rec, wt)
+    assert d.action == "EXIT_UP", d
+    assert d.tif == "FAK" and d.post_only is False
+    assert d.extra_meta == {"stop": True}
+    assert Decimal(d.price) == Decimal("0.44")
+
+
+def test_tail_stop_hedge_fallback():
+    """止损卖单未成交（on_order_expired 带 stop 标记）→ 切对冲买对侧锁亏。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.85"), Decimal("0.95"),
+                             False, 0, "limit", Decimal("0.45"))
+    eng.on_fill(7, "UP", Decimal("5.56"), Decimal("0.85"), "BUY", {"module": "tail_capture"})
+    # 第一 tick：止损卖单
+    d = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                            remaining_s=60.0), rec, wt)
+    assert d.action == "EXIT_UP"
+    # 卖单未成交被拒 → 标记
+    eng.on_order_expired(7, {"stop": True})
+    assert eng.positions[7].stop_sell_attempted is True
+    # 下一 tick：改为对冲买 DOWN（FAK）
+    d2 = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                             remaining_s=60.0), rec, wt)
+    assert d2.action == "HEDGE_DOWN", d2
+    assert d2.tif == "FAK" and d2.post_only is False
+    assert Decimal(d2.price) == Decimal("0.52")
+
+
+def test_tail_stop_disabled_by_default():
+    """默认止损价 0（关闭）→ 价格下跌仍持有，不触发止损。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.on_fill(7, "UP", Decimal("5.56"), Decimal("0.85"), "BUY", {"module": "tail_capture"})
+    d = eng.decide(features(up_bid=0.30, up_ask=0.32, down_bid=0.60, down_ask=0.62,
+                            remaining_s=60.0), rec, wt)
+    assert d.action == "NOOP", d
+
+
+def test_tail_complete_set_holds_after_stop_hedge():
+    """对冲成交后成完整组合 → 持有到结算（不再止损/止盈）。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.85"), Decimal("0.95"),
+                             False, 0, "limit", Decimal("0.45"))
+    eng.on_fill(7, "UP", Decimal("5.56"), Decimal("0.85"), "BUY", {"module": "tail_capture"})
+    eng.on_order_expired(7, {"stop": True})
+    d = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                            remaining_s=60.0), rec, wt)
+    assert d.action == "HEDGE_DOWN"
+    # 对冲成交：买 DOWN
+    eng.on_fill(7, "DOWN", Decimal(d.qty), Decimal(d.price), "BUY", {"module": "hedge", "stop": True})
+    # 完整组合 → 持有
+    d2 = eng.decide(features(up_bid=0.44, up_ask=0.46, down_bid=0.50, down_ask=0.52,
+                             remaining_s=60.0), rec, wt)
+    assert d2.action == "NOOP", d2

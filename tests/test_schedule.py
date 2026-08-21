@@ -46,6 +46,7 @@ def test_get_controls_defaults(db_path: str) -> None:
     assert controls["entry_delay_enabled"] is False
     assert controls["entry_delay_minutes"] == 3
     assert controls["tail_entry_mode"] == "limit"
+    assert controls["tail_stop_price"] == "0"
 
 
 def test_save_controls_roundtrip(db_path: str) -> None:
@@ -61,6 +62,7 @@ def test_save_controls_roundtrip(db_path: str) -> None:
         "entry_delay_enabled": True,
         "entry_delay_minutes": 2,
         "tail_entry_mode": "market",
+        "tail_stop_price": 0.45,
     })
     assert controls["fixed_order_notional"] == "7.5"
     assert controls["daily_profit_target"] == "12"
@@ -72,6 +74,7 @@ def test_save_controls_roundtrip(db_path: str) -> None:
     assert controls["entry_delay_enabled"] is True
     assert controls["entry_delay_minutes"] == 2
     assert controls["tail_entry_mode"] == "market"
+    assert controls["tail_stop_price"] == "0.45"
     assert get_controls(_Db(db_path)) == controls
 
 
@@ -88,6 +91,7 @@ def test_save_controls_validation(db_path: str) -> None:
         "entry_delay_enabled": False,
         "entry_delay_minutes": 3,
         "tail_entry_mode": "limit",
+        "tail_stop_price": 0,
     }
     with pytest.raises(ValueError):
         save_controls(db_path, {**base, "daily_profit_target": -1})
@@ -103,6 +107,10 @@ def test_save_controls_validation(db_path: str) -> None:
         save_controls(db_path, {**base, "entry_delay_minutes": 5})
     with pytest.raises(ValueError):
         save_controls(db_path, {**base, "tail_entry_mode": "xxx"})
+    with pytest.raises(ValueError):
+        save_controls(db_path, {**base, "tail_stop_price": 0.98})   # 止损须低于进场价
+    with pytest.raises(ValueError):
+        save_controls(db_path, {**base, "tail_stop_price": 1.0})
     with pytest.raises(ValueError):
         save_controls(db_path, {**base, "entry_delay_minutes": -1})
     with pytest.raises(ValueError):

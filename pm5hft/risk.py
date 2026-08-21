@@ -138,7 +138,8 @@ class RiskEngine:
         if ctx.kind == "entry" and ctx.entry_direction == "DOWN" and w.entries_down >= 1:
             return RiskCheck(False, "same-side re-entry blocked (anti-martingale)", "MARTINGALE_BLOCK")
 
-        # 铁律 2：禁亏钱对冲
+        # 铁律 2：禁亏钱对冲（止损兜底 stop_hedge 除外——市价卖不出的紧急锁亏，
+        # 是止损的一部分，非策略性亏钱对冲，见 strategy._tail_stop_hedge）
         if ctx.kind == "hedge":
             if ctx.complete_set_cost is None:
                 return RiskCheck(False, "hedge without complete set cost", "HEDGE_COST_MISSING")

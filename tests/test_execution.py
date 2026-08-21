@@ -143,7 +143,7 @@ async def test_unfilled_taker_notifies_closed_once(ctx):
     closed: list[tuple[str, str]] = []
     engine = ExecutionEngine(
         cfg, repo, gw,
-        on_order_closed=lambda oid, mid, state: closed.append((oid, state)),
+        on_order_closed=lambda oid, mid, state, meta=None: closed.append((oid, state)),
     )
     intent = OrderIntent(market_id=1, token_id="T_UP", side="BUY",
                          price=Decimal("0.43"), qty=Decimal("5"), tif="FAK", post_only=False)

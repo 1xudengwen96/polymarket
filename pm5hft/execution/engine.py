@@ -129,7 +129,7 @@ class ExecutionEngine:
         gateway: Gateway,
         on_fill: Callable[[FillEvent], Any] | None = None,
         deadline_for: Callable[[int], int | None] | None = None,
-        on_order_closed: Callable[[str, int, str], Any] | None = None,
+        on_order_closed: Callable[[str, int, str, str | None], Any] | None = None,
         now_ms_fn: Callable[[], int] | None = None,
     ) -> None:
         self.config = config
@@ -244,7 +244,7 @@ class ExecutionEngine:
     async def _notify_closed(self, order, state: str) -> None:
         if self.on_order_closed is not None:
             try:
-                result = self.on_order_closed(order.client_order_id, order.market_id, state)
+                result = self.on_order_closed(order.client_order_id, order.market_id, state, order.meta)
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:

@@ -109,6 +109,7 @@ border:1px solid var(--border)}
 	<label class="control" title="进场方式：限价=挂单（成交价不高于进场价，可能不成交）；市价=到价立即市价买入（保证成交，成交价=当时 ask，可能略高于进场价）">进场 <select id="entryMode">
 	<option value="limit">限价</option><option value="market">市价</option></select></label>
 	<label class="control" title="尾部止盈出场价（¢）。0 = 关闭（持有到结算）；>0 = 持仓方 bid 涨到该价就卖出落袋。例：进场 90 / 出场 99">出场价 <input id="tailExit" type="number" min="0" max="99.9" step="0.1" value="0"> ¢</label>
+	<label class="control" title="止损价（¢）。0 = 关闭；>0 = 持仓方 bid 跌到该价 → 市价卖出锁亏（反向单）；若卖单未成交，自动买对侧对冲兜底（持有 YES 买 NO 锁亏）。例：85 进 / 95 出 / 45 止损">止损价 <input id="tailStop" type="number" min="0" max="99.9" step="0.1" value="0"> ¢</label>
 	<label class="control">交易时段 <span class="switch"><input id="hoursOn" type="checkbox"><span class="slider"></span></span></label>
 	<label class="control">北京 <input id="hoursStart" type="number" min="0" max="23" step="1" value="9">—<input id="hoursEnd" type="number" min="0" max="23" step="1" value="21"> 时</label>
 	<label class="control" title="开启后：窗口开始后的第 N 分钟才允许进场（0=不延迟）。只挡新仓，已有持仓照常管理">延迟进场 <span class="switch"><input id="delayOn" type="checkbox"><span class="slider"></span></span> 第 <input id="delayMin" type="number" min="0" max="4" step="1" value="3"> 分钟</label>
@@ -187,6 +188,7 @@ async function tick(){
 	  document.getElementById('profitTarget').value=c.daily_profit_target??'0';
 	  document.getElementById('tailEntry').value=((parseFloat(c.tail_entry_price)||0.98)*100).toFixed(1);
 	  document.getElementById('tailExit').value=((parseFloat(c.tail_exit_price)||0)*100).toFixed(1);
+	  document.getElementById('tailStop').value=((parseFloat(c.tail_stop_price)||0)*100).toFixed(1);
 	  document.getElementById('hoursOn').checked=!!c.trading_hours_enabled;
 	  document.getElementById('hoursStart').value=c.trading_hours_start_bt??9;
 	  document.getElementById('hoursEnd').value=c.trading_hours_end_bt??21;
@@ -201,6 +203,7 @@ async function tick(){
 	  const target=Number(document.getElementById('profitTarget').value);
 	  const entry=Number(document.getElementById('tailEntry').value);
 	  const exitp=Number(document.getElementById('tailExit').value);
+	  const stopv=Number(document.getElementById('tailStop').value);
 	  const hs=parseInt(document.getElementById('hoursStart').value,10);
 	  const he=parseInt(document.getElementById('hoursEnd').value,10);
 	  const dmin=parseInt(document.getElementById('delayMin').value,10);
@@ -208,7 +211,9 @@ async function tick(){
 	  if(!Number.isFinite(target)||target<0){msg.textContent='止盈需 ≥0';msg.className='ctl-msg down';return}
 	  if(!Number.isFinite(entry)||entry<50||entry>99.9){msg.textContent='进场价需 50-99.9¢';msg.className='ctl-msg down';return}
 	  if(!Number.isFinite(exitp)||exitp<0||exitp>99.9){msg.textContent='出场价需 0-99.9¢';msg.className='ctl-msg down';return}
+	  if(!Number.isFinite(stopv)||stopv<0||stopv>99.9){msg.textContent='止损价需 0-99.9¢';msg.className='ctl-msg down';return}
 	  if(entry>0&&exitp>0&&exitp<=entry){msg.textContent='出场价需高于进场价';msg.className='ctl-msg down';return}
+	  if(entry>0&&stopv>0&&stopv>=entry){msg.textContent='止损价需低于进场价';msg.className='ctl-msg down';return}
 	  if(!Number.isInteger(hs)||hs<0||hs>23||!Number.isInteger(he)||he<0||he>23){msg.textContent='时段需 0-23 时';msg.className='ctl-msg down';return}
 	  if(!Number.isInteger(dmin)||dmin<0||dmin>4){msg.textContent='延迟分钟需 0-4';msg.className='ctl-msg down';return}
 	  btn.disabled=true;msg.textContent='保存中';
@@ -219,6 +224,7 @@ async function tick(){
 	      daily_profit_target:target,
 	      tail_entry_price:entry/100,
 	      tail_exit_price:exitp/100,
+	      tail_stop_price:stopv/100,
 	      trading_hours_enabled:document.getElementById('hoursOn').checked,
 	      trading_hours_start_bt:hs,
 	      trading_hours_end_bt:he,
@@ -234,6 +240,7 @@ async function tick(){
 	document.getElementById('profitTarget').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('tailEntry').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('tailExit').addEventListener('input',()=>{controlsDirty=true});
+	document.getElementById('tailStop').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('hoursOn').addEventListener('change',()=>{controlsDirty=true;saveControls()});
 	document.getElementById('hoursStart').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('hoursEnd').addEventListener('input',()=>{controlsDirty=true});
@@ -395,10 +402,11 @@ def get_controls(conn: _Db) -> dict:
         "entry_delay_enabled": False,
         "entry_delay_minutes": 3,
         "tail_entry_mode": "limit",
+        "tail_stop_price": "0",
     }
     try:
         rows = conn.execute(
-            "SELECT setting_key, value FROM runtime_settings WHERE setting_key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "SELECT setting_key, value FROM runtime_settings WHERE setting_key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             tuple(defaults),
         ).fetchall()
     except Exception:  # table is created by the bot during rolling upgrades
@@ -466,10 +474,19 @@ def save_controls(db_path: str, payload: dict) -> dict:
     entry_mode = payload.get("tail_entry_mode", "limit")
     if entry_mode not in ("limit", "market"):
         raise ValueError("tail_entry_mode must be 'limit' or 'market'")
+    try:
+        stopv = float(payload.get("tail_stop_price", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("tail_stop_price must be numeric") from exc
+    if not 0 <= stopv <= 0.999:
+        raise ValueError("tail_stop_price must be between 0 and 0.999")
+    if stopv > 0 and stopv >= entry:
+        raise ValueError("tail_stop_price must be below tail_entry_price")
     amount_text = f"{amount:.2f}".rstrip("0").rstrip(".")
     target_text = f"{target:.2f}".rstrip("0").rstrip(".")
     entry_text = f"{entry:.3f}".rstrip("0").rstrip(".")
     exit_text = f"{exitp:.3f}".rstrip("0").rstrip(".")
+    stop_text = f"{stopv:.3f}".rstrip("0").rstrip(".")
     now = int(time.time() * 1000)
     conn = _Db(db_path)
     try:
@@ -479,6 +496,7 @@ def save_controls(db_path: str, payload: dict) -> dict:
             ("daily_profit_target", target_text),
             ("tail_entry_price", entry_text),
             ("tail_exit_price", exit_text),
+            ("tail_stop_price", stop_text),
             ("trading_hours_enabled", "true" if hours_on else "false"),
             ("trading_hours_start_bt", str(start_h)),
             ("trading_hours_end_bt", str(end_h)),

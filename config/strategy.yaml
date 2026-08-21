@@ -68,6 +68,9 @@ tail_capture:
   entry_mode: limit              # 进场方式（Dashboard 可切换）：limit=挂单（post-only，
                                  #   成交价不高于进场价，可能不成交）；market=市价吃单
                                  #   （FAK 立即成交，成交价=当时 ask，保证上车）
+  stop_loss_price: 0             # 止损价（0.50-0.999；Dashboard 可覆盖；0 = 关闭）。
+                                 # 持仓方 bid ≤ 止损价 → 市价卖出持仓锁亏；
+                                 # 卖单未成交时自动买对侧对冲兜底（止损的一部分）
   tail_min_remaining_s: 10
 
 tail_hedge:
