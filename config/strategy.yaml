@@ -1,4 +1,8 @@
 # 策略参数（docs/04-strategy-engine.md §10；Phase 2 起被 StrategyEngine 消费）
+runtime:                            # 进程节奏（提速项；文档见 README「提速方案」）
+  strategy_tick_interval_s: 0.5     # 策略决策循环周期（秒）：0.5 = 每秒评估 2 次，
+                                    #   T-60s 入场窗口内更早捕捉到价机会；决策本身是微秒级，
+                                    #   瓶颈在网络，不必低于 0.3
 schedule:                           # 交易日程（Dashboard 可运行时覆盖；默认关闭）
   daily_profit_target_usdt: 0       # 每日止盈目标（USDT）：当日已实现利润 ≥ 该值 → 当日休息
                                     #   0 = 关闭。计数随机器人启动清零，北京时间 0 点重置；
@@ -8,9 +12,10 @@ schedule:                           # 交易日程（Dashboard 可运行时覆�
   trading_hours_end_bt: 21          # 交易结束（北京时间小时 0-23；支持跨夜，如 22→6）
 books:                              # 簿口数据源（2026-08-17 实盘教训：CLOB WS 流投递延迟
   rest_poll_enabled: true           #   中位 3s / 行情剧烈时 10-23s，入场决策用过期簿口 →
-  rest_poll_interval_s: 1.0         #   挂单错过机会。REST /books 走撮合引擎真实簿口
+  rest_poll_interval_s: 0.2         #   挂单错过机会。REST /books 走撮合引擎真实簿口
   rest_poll_timeout_s: 5.0          #   （延迟 ~0.3-0.6s），每秒轮询当前窗口 token；
-                                    #   REST 失败自动回退 WS 流簿口（无数据丢失）。
+                                    #   0.2s = 5 次/秒（市场数据端点无 429 限制，且连续 3 次
+                                    #   失败自动回退 WS 流簿口，无数据丢失）。
 entry:
   initial_position_pct: 0.002        # 初始仓位 = equity × 0.2%
   min_initial_notional: 5            # USDC

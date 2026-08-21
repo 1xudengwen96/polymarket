@@ -440,8 +440,9 @@ class Supervisor:
 
     # ── 策略决策循环（Phase 2b：决策 → 执行 → 成交 → 结算记账）─
     async def _strategy_loop(self) -> None:
+        interval = float(self.config.s("runtime.strategy_tick_interval_s", 0.5))
         while not self._stop.is_set():
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(interval)
             try:
                 await self._strategy_tick()
             except Exception:
