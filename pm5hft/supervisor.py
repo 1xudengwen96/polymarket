@@ -118,6 +118,12 @@ class Supervisor:
         self._entry_delay_enabled = bool(config.s("tail_capture.entry_delay_enabled", False))
         self._entry_delay_min = int(config.s("tail_capture.entry_delay_minutes", 3))
         self._last_risk_state: str | None = None  # 发布给 Dashboard 显示的风控状态
+        # 提速缓存：runtime_settings 1s 读一次（面板改动最多 1s 生效）；
+        # 成交回调免 DB 读订单 meta（同订单部分成交多次时省读+解析）
+        self._rt_cache: dict[str, str] | None = None
+        self._rt_cache_ts = 0.0
+        self._fill_cache: dict[str, tuple[str, dict]] = {}  # client_order_id -> (token_id, meta)
+        self._last_decision_log_ms = 0  # decision_log 每 tick 写 → 降频到 1/s
         # 交易日程状态（每日止盈目标 + 北京时间交易时段；休息原因写回 DB 供 Dashboard 展示）
         self._bt_day: str | None = None        # 当前北京日期（止盈计数按北京日重置）
         self._bt_session_pnl = Decimal("0")    # 当日（北京日）已实现利润累计（随启动清零）
@@ -221,24 +227,32 @@ class Supervisor:
         self.strategy.on_order_expired(market_id)
 
     async def _on_fill_event(self, fill: FillEvent) -> None:
-        # 权威 token = 订单记录的 token_id（实盘 2026-08-21 事故根因：live 网关
-        # UserTradeEvent 的 payload.token_id 与订单 token 不一致，直接用它会把 UP
-        # 成交标成 DOWN → 策略内存账本方向反转 → 对冲买错边、出场卖错边/拒单）
-        order = await self.repo.get_order(fill.order_id)
-        if order is None:
-            self.log.warning("fill for unknown order", order=fill.order_id)
-            return
-        token_id = order.token_id or fill.token_id
+        # 提速：同订单多次成交（部分成交）免重复 DB 读订单 + JSON 解析
+        cached = self._fill_cache.get(fill.order_id)
+        if cached is not None:
+            token_id, meta = cached
+        else:
+            # 权威 token = 订单记录的 token_id（实盘 2026-08-21 事故根因：live 网关
+            # UserTradeEvent 的 payload.token_id 与订单 token 不一致，直接用它会把 UP
+            # 成交标成 DOWN → 策略内存账本方向反转 → 对冲买错边、出场卖错边/拒单）
+            order = await self.repo.get_order(fill.order_id)
+            if order is None:
+                self.log.warning("fill for unknown order", order=fill.order_id)
+                return
+            token_id = order.token_id or fill.token_id
+            meta: dict[str, Any] = {}
+            if order.meta:
+                try:
+                    meta = json.loads(order.meta)
+                except json.JSONDecodeError:
+                    meta = {}
+            if len(self._fill_cache) > 2000:
+                self._fill_cache.clear()
+            self._fill_cache[fill.order_id] = (token_id, meta)
         rec = self._record_for_token(token_id)
         if rec is None:
             return
         token_side = "UP" if token_id == rec.token_up else "DOWN"
-        meta: dict[str, Any] = {}
-        if order.meta:
-            try:
-                meta = json.loads(order.meta)
-            except json.JSONDecodeError:
-                meta = {}
         if meta.get("module") == "entry":
             pos = self.strategy.positions.get(rec.market_id)
             if pos is not None:
@@ -471,7 +485,10 @@ class Supervisor:
                 )
             d = self.strategy.decide(f, rec, wt)
             pos = self.strategy.positions.get(rec.market_id)
-            await self.repo.add_decision(rec, wt, f, d, pos, cal.cal_prob, market_p, edge)
+            # 提速：decision_log 直接写库，从每 tick 降频到 1/s（复盘粒度足够）
+            if now_ms() - self._last_decision_log_ms >= 1000:
+                self._last_decision_log_ms = now_ms()
+                await self.repo.add_decision(rec, wt, f, d, pos, cal.cal_prob, market_p, edge)
             if d.action != "NOOP":
                 self.log.info("decision", action=d.action, side=d.token_side,
                               price=d.price, qty=d.qty, reason=d.reason)
@@ -499,7 +516,12 @@ class Supervisor:
                                        positions=[(p.token_id, p.qty) for p in open_pos])
 
     async def _refresh_runtime_controls(self) -> None:
-        values = await self.repo.get_runtime_settings()
+        # 提速：runtime_settings 最多 1s 读一次（面板设置变化 ≤1s 生效）
+        now_mono = time.monotonic()
+        if self._rt_cache is None or now_mono - self._rt_cache_ts >= 1.0:
+            self._rt_cache = await self.repo.get_runtime_settings()
+            self._rt_cache_ts = now_mono
+        values = self._rt_cache
         enabled = values.get("auto_trading_enabled", "true").lower() == "true"
         try:
             notional = Decimal(values.get("fixed_order_notional", "5"))
