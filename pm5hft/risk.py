@@ -252,6 +252,18 @@ class RiskEngine:
         self.kill_reason = reason
         self.log.error("KILL SWITCH", reason=reason)
 
+    def reset_kill(self) -> None:
+        """人工解锁（Dashboard 按钮触发）：恢复 NORMAL，并把回撤基线重置为当前权益。
+
+        若不同时重置 peak_equity，下一次结算会按旧峰值立刻再次触发 KILL，
+        解锁等于无效。因此解锁语义 = 承认当前亏损，以现在权益为新起点继续。
+        """
+        self.state = RiskState.NORMAL
+        self.kill_reason = None
+        self.peak_equity = self.equity
+        self.consecutive_losses = 0
+        self.log.warning("kill switch manually reset (dashboard)", equity=str(self.equity))
+
     def reset_daily(self) -> None:
         self.daily_pnl = Decimal("0")
 

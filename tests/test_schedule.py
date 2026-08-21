@@ -43,6 +43,8 @@ def test_get_controls_defaults(db_path: str) -> None:
     assert controls["trading_hours_enabled"] is False
     assert controls["trading_hours_start_bt"] == 9
     assert controls["trading_hours_end_bt"] == 21
+    assert controls["entry_delay_enabled"] is False
+    assert controls["entry_delay_minutes"] == 3
 
 
 def test_save_controls_roundtrip(db_path: str) -> None:
@@ -55,6 +57,8 @@ def test_save_controls_roundtrip(db_path: str) -> None:
         "trading_hours_enabled": True,
         "trading_hours_start_bt": 22,
         "trading_hours_end_bt": 6,
+        "entry_delay_enabled": True,
+        "entry_delay_minutes": 2,
     })
     assert controls["fixed_order_notional"] == "7.5"
     assert controls["daily_profit_target"] == "12"
@@ -63,6 +67,8 @@ def test_save_controls_roundtrip(db_path: str) -> None:
     assert controls["trading_hours_enabled"] is True
     assert controls["trading_hours_start_bt"] == 22
     assert controls["trading_hours_end_bt"] == 6
+    assert controls["entry_delay_enabled"] is True
+    assert controls["entry_delay_minutes"] == 2
     assert get_controls(_Db(db_path)) == controls
 
 
@@ -76,6 +82,8 @@ def test_save_controls_validation(db_path: str) -> None:
         "trading_hours_enabled": False,
         "trading_hours_start_bt": 9,
         "trading_hours_end_bt": 21,
+        "entry_delay_enabled": False,
+        "entry_delay_minutes": 3,
     }
     with pytest.raises(ValueError):
         save_controls(db_path, {**base, "daily_profit_target": -1})
@@ -87,6 +95,10 @@ def test_save_controls_validation(db_path: str) -> None:
         save_controls(db_path, {**base, "tail_exit_price": 1.0})
     with pytest.raises(ValueError):
         save_controls(db_path, {**base, "tail_exit_price": 0.98})   # 出场须高于进场
+    with pytest.raises(ValueError):
+        save_controls(db_path, {**base, "entry_delay_minutes": 5})
+    with pytest.raises(ValueError):
+        save_controls(db_path, {**base, "entry_delay_minutes": -1})
     with pytest.raises(ValueError):
         save_controls(db_path, {**base, "trading_hours_start_bt": 24})
     with pytest.raises(ValueError):

@@ -134,3 +134,17 @@ def test_set_equity_recomputes_limits():
     # 单笔 5 USDC 在 92 权益下通过预检（关键：小资金可交易）
     c = risk.pre_trade(ctx(qty=Decimal("5"), price=Decimal("0.98")))
     assert c.ok, c.reason
+
+
+def test_reset_kill_restores_normal_and_baseline():
+    """解锁熔断：状态回 NORMAL、回撤基线重置为当前权益（否则立刻再触发）。"""
+    cfg = Config()
+    risk = RiskEngine(cfg, mode="paper")
+    risk.equity = Decimal("50")
+    risk.peak_equity = Decimal("100")
+    risk.kill("max drawdown 50%")
+    assert risk.state.value == "KILL"
+    risk.reset_kill()
+    assert risk.state.value == "NORMAL"
+    assert risk.kill_reason is None
+    assert risk.peak_equity == Decimal("50")  # 以当前权益为新起点

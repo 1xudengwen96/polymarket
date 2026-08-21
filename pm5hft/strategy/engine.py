@@ -120,6 +120,9 @@ class StrategyEngine:
         self.tail_entry_price = Decimal(str(config.s("tail_capture.entry_price_min", 0.98)))
         # 尾盘止盈出场价（0 = 关闭，持有到结算；>0 = 持仓方 bid ≥ 该价即卖出落袋）
         self.tail_exit_price = Decimal(str(config.s("tail_capture.exit_price", 0)))
+        # 延迟进场（Dashboard 可开关）：窗口进行到第 N 分钟之后才允许开新仓
+        self.tail_entry_delay_enabled = bool(config.s("tail_capture.entry_delay_enabled", False))
+        self.tail_entry_delay_min = int(config.s("tail_capture.entry_delay_minutes", 3))
         # 反向实验独立风控实例：实验盈亏/连亏/熔断与主账本完全隔离
         # （冷门方胜率极低，若共享风控会以连亏冷却/日亏限额污染主策略）
         self.fade_assets: list[str] = [
@@ -143,13 +146,19 @@ class StrategyEngine:
     # ── 主入口 ───────────────────────────────────────────────
     def set_runtime_controls(self, enabled: bool, fixed_order_notional: Decimal,
                              tail_entry_price: Decimal | None = None,
-                             tail_exit_price: Decimal | None = None) -> None:
+                             tail_exit_price: Decimal | None = None,
+                             entry_delay_enabled: bool | None = None,
+                             entry_delay_minutes: int | None = None) -> None:
         self.auto_trading_enabled = enabled
         self.fixed_order_notional = fixed_order_notional
         if tail_entry_price is not None:
             self.tail_entry_price = max(Decimal("0.50"), min(Decimal("0.999"), tail_entry_price))
         if tail_exit_price is not None:
             self.tail_exit_price = max(Decimal("0"), min(Decimal("0.999"), tail_exit_price))
+        if entry_delay_enabled is not None:
+            self.tail_entry_delay_enabled = bool(entry_delay_enabled)
+        if entry_delay_minutes is not None:
+            self.tail_entry_delay_min = max(0, min(4, int(entry_delay_minutes)))
 
     def decide(self, f: dict, rec, wt) -> Decision:
         """f: FeatureStore.features() 输出；rec: MarketRecord；wt: WindowTwap。"""
@@ -177,6 +186,12 @@ class StrategyEngine:
             if pos.up_qty > 0 or pos.down_qty > 0:
                 return self._state_machine(f, rec, wt, pos, remaining, into)
             return Decision.noop("auto trading disabled", "AUTO_TRADING_DISABLED")
+
+        # 延迟进场（Dashboard 开关）：窗口进行到第 N 分钟之后才允许开新仓。
+        # 只挡新仓；已有持仓照常走状态机（退出/对冲不受影响）。
+        if (self.tail_entry_delay_enabled and pos.up_qty == 0 and pos.down_qty == 0
+                and float(f.get("into_window_s") or 0.0) < self.tail_entry_delay_min * 60):
+            return Decision.noop(f"entry delay: minute {self.tail_entry_delay_min} not reached")
 
         # 反向实验资产：主策略（状态机/tail/arb）一律跳过，只跑 xrp_fade
         if self.fade_assets and rec.asset in self.fade_assets:

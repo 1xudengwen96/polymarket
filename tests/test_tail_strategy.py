@@ -399,3 +399,27 @@ def test_tail_auto_hedge_disabled():
     d = eng.decide(features(up_bid=0.89, up_ask=0.90, down_bid=0.009, down_ask=0.010,
                             remaining_s=60.0), rec, wt)
     assert d.action == "NOOP", d
+
+
+def test_entry_delay_blocks_early_entry():
+    """延迟进场：第 3 分钟前禁止开新仓，到达后放行；默认关闭时不受影响。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    # 开启延迟：第 3 分钟（into=180s）后才可进场
+    eng.set_runtime_controls(True, Decimal("5"), Decimal("0.98"), None, True, 3)
+    d = eng.decide(features(into_window_s=120.0), rec, wt)
+    assert d.action == "NOOP", d
+    d = eng.decide(features(into_window_s=180.0), rec, wt)
+    assert d.action == "TAIL_CAPTURE_UP", d
+
+
+def test_entry_delay_disabled_by_default():
+    """默认关闭：窗口一开始就可进场（无延迟）。"""
+    cfg = Config()
+    cfg.strategy["entry"]["entry_min_gross_edge"] = 99
+    eng = make_engine(cfg)
+    rec, wt = FakeRec(), FakeTwap()
+    d = eng.decide(features(into_window_s=30.0), rec, wt)
+    assert d.action == "TAIL_CAPTURE_UP", d

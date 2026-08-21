@@ -57,6 +57,9 @@ tail_capture:
                                  # 默认 0 = 保持原行为（持有到结算，数据结论见 _exit_candidate 注释）
   auto_hedge: false              # 尾仓持仓期间是否自动对冲（买对侧冷门方锁利）。false = 关闭：
                                  # 纯 进场→出场/结算 流程（赢单拿满利润，输单全额承担）
+  entry_delay_enabled: false     # 延迟进场开关（Dashboard 可覆盖）：true = 窗口进行到
+                                 #   entry_delay_minutes 分钟之后才允许开新仓
+  entry_delay_minutes: 3         # 延迟进场分钟数（0-4，5 分钟窗口；Dashboard 可覆盖）
   tail_min_remaining_s: 10
 
 tail_hedge:

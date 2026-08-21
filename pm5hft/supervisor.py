@@ -115,6 +115,9 @@ class Supervisor:
         self._runtime_notional = Decimal(str(config.s("tail_capture.fixed_order_notional", 5)))
         self._tail_entry_price = Decimal(str(config.s("tail_capture.entry_price_min", 0.98)))
         self._tail_exit_price = Decimal(str(config.s("tail_capture.exit_price", 0)))
+        self._entry_delay_enabled = bool(config.s("tail_capture.entry_delay_enabled", False))
+        self._entry_delay_min = int(config.s("tail_capture.entry_delay_minutes", 3))
+        self._last_risk_state: str | None = None  # 发布给 Dashboard 显示的风控状态
         # 交易日程状态（每日止盈目标 + 北京时间交易时段；休息原因写回 DB 供 Dashboard 展示）
         self._bt_day: str | None = None        # 当前北京日期（止盈计数按北京日重置）
         self._bt_session_pnl = Decimal("0")    # 当日（北京日）已实现利润累计（随启动清零）
@@ -516,6 +519,36 @@ class Supervisor:
         except Exception:  # noqa: BLE001
             exit_price = Decimal("0")
         exit_price = max(Decimal("0"), min(Decimal("0.999"), exit_price))
+        # 延迟进场（Dashboard 开关 + 第几分钟）
+        try:
+            delay_on = values.get(
+                "entry_delay_enabled",
+                str(bool(self.config.s("tail_capture.entry_delay_enabled", False))),
+            ).lower() == "true"
+        except Exception:  # noqa: BLE001
+            delay_on = False
+        try:
+            delay_min = int(values.get(
+                "entry_delay_minutes", self.config.s("tail_capture.entry_delay_minutes", 3)))
+        except (TypeError, ValueError):
+            delay_min = 3
+        delay_min = max(0, min(4, delay_min))
+        # 熔断解锁请求（Dashboard「解锁熔断」按钮）：一次性，处理完置回 0
+        if values.get("reset_kill_request", "0").lower() in ("1", "true"):
+            self.risk.reset_kill()
+            self.log.warning("KILL switch reset via dashboard unlock button")
+            try:
+                await self.repo.set_runtime_setting("reset_kill_request", "0")
+            except Exception:  # noqa: BLE001
+                self.log.exception("failed to clear reset_kill_request")
+        # 发布风控状态给 Dashboard（变化时写一次，供「解锁熔断」按钮显示）
+        risk_state = self.risk.state.value
+        if risk_state != self._last_risk_state:
+            self._last_risk_state = risk_state
+            try:
+                await self.repo.set_runtime_setting("risk_state", risk_state)
+            except Exception:  # noqa: BLE001
+                self.log.exception("failed to persist risk_state")
 
         # ── 交易日程一：每日止盈目标（北京日计数，随启动清零） ──────────
         # 北京 0 点换日：重置计数并解除当日止盈休息（与风控的 UTC 日亏限额互不影响）
@@ -566,14 +599,18 @@ class Supervisor:
 
         changed = (effective != self._runtime_enabled or notional != self._runtime_notional
                    or rest_reason != self._rest_reason or entry_price != self._tail_entry_price
-                   or exit_price != self._tail_exit_price)
+                   or exit_price != self._tail_exit_price
+                   or delay_on != self._entry_delay_enabled or delay_min != self._entry_delay_min)
         was_enabled = self._runtime_enabled
         self._runtime_enabled = effective
         self._runtime_notional = notional
         self._tail_entry_price = entry_price
         self._tail_exit_price = exit_price
+        self._entry_delay_enabled = delay_on
+        self._entry_delay_min = delay_min
         self._profit_target_hit = target_hit
-        self.strategy.set_runtime_controls(effective, notional, entry_price, exit_price)
+        self.strategy.set_runtime_controls(effective, notional, entry_price, exit_price,
+                                           delay_on, delay_min)
         if rest_reason != self._rest_reason:
             self._rest_reason = rest_reason
             try:
@@ -585,6 +622,7 @@ class Supervisor:
                           fixed_order_notional=str(notional), rest_reason=rest_reason,
                           profit_target=str(target), session_pnl=str(self._bt_session_pnl),
                           tail_entry_price=str(entry_price), tail_exit_price=str(exit_price),
+                          entry_delay=[delay_on, delay_min],
                           trading_hours=[start_h, end_h] if hours_on else None)
         if was_enabled and not effective:
             entry_modules = {"entry", "tail_capture", "xrp_fade", "mid_capture", "arb"}

@@ -83,7 +83,7 @@ border:1px solid var(--border)}
 .scroll::-webkit-scrollbar-thumb:hover{background:#3c5170}
 	#stale{position:fixed;top:46px;right:14px;z-index:20;color:var(--warn);
 	background:#2c2412;border:1px solid #6b5210;border-radius:8px;padding:4px 10px;display:none}
-	.controls{margin-left:auto;display:flex;align-items:center;gap:9px;background:var(--card);
+	.controls{margin-left:auto;display:flex;flex-wrap:wrap;align-items:center;gap:9px;background:var(--card);
 	border:1px solid var(--border);border-radius:8px;padding:6px 8px}
 	.control{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:12px}
 	.control input[type=number]{width:82px;background:var(--card2);color:var(--fg);border:1px solid var(--border);
@@ -109,6 +109,8 @@ border:1px solid var(--border)}
 	<label class="control" title="尾部止盈出场价（¢）。0 = 关闭（持有到结算）；>0 = 持仓方 bid 涨到该价就卖出落袋。例：进场 90 / 出场 99">出场价 <input id="tailExit" type="number" min="0" max="99.9" step="0.1" value="0"> ¢</label>
 	<label class="control">交易时段 <span class="switch"><input id="hoursOn" type="checkbox"><span class="slider"></span></span></label>
 	<label class="control">北京 <input id="hoursStart" type="number" min="0" max="23" step="1" value="9">—<input id="hoursEnd" type="number" min="0" max="23" step="1" value="21"> 时</label>
+	<label class="control" title="开启后：窗口开始后的第 N 分钟才允许进场（0=不延迟）。只挡新仓，已有持仓照常管理">延迟进场 <span class="switch"><input id="delayOn" type="checkbox"><span class="slider"></span></span> 第 <input id="delayMin" type="number" min="0" max="4" step="1" value="3"> 分钟</label>
+	<button class="btn" id="unlockBtn" type="button" style="display:none" title="解除 KILL 熔断（全停）并恢复交易；解锁以当前权益为新回撤起点">🔓 解锁熔断</button>
 	<button class="btn" id="saveControls" type="button">保存</button><span class="ctl-msg" id="controlMsg"></span>
 	</div>
 	</div>
@@ -120,6 +122,7 @@ border:1px solid var(--border)}
 <div class="chip"><span class="k">回撤</span><b id="c_dd">—</b></div>
 <div class="chip"><span class="k">日 / 时 PnL</span><b id="c_dh">—</b></div>
 <div class="chip"><span class="k">休息状态</span><b id="c_rest">—</b></div>
+<div class="chip"><span class="k">熔断</span><b id="c_kill">—</b></div>
 <div class="chip"><span class="k">TWAP60 结算口径</span><b id="c_twap">—</b></div>
 </div>
 </div></div>
@@ -163,6 +166,9 @@ async function tick(){
     const REST={none:'运行中',manual:'手动关闭',profit_target:'止盈达成',trading_hours:'时段外'};
     const rr=REST[s.rest_reason]||'—';
     set('c_rest',rr,s.rest_reason&&s.rest_reason!=='none'?'warn':'');
+    const killed=s.risk_state==='KILL';
+    set('c_kill',killed?'熔断中':'正常',killed?'down':'');
+    document.getElementById('unlockBtn').style.display=killed?'':'none';
     set('c_twap',tw.v60?tw.v60+' ('+tw.a60+'s前)':'—');
     renderAssets(s);renderMid(s);renderDec(s);renderOrders(s);renderFills(s);
     renderPositions(s);renderSettle(s);
@@ -179,6 +185,8 @@ async function tick(){
 	  document.getElementById('hoursOn').checked=!!c.trading_hours_enabled;
 	  document.getElementById('hoursStart').value=c.trading_hours_start_bt??9;
 	  document.getElementById('hoursEnd').value=c.trading_hours_end_bt??21;
+	  document.getElementById('delayOn').checked=!!c.entry_delay_enabled;
+	  document.getElementById('delayMin').value=c.entry_delay_minutes??3;
 	  controlsReady=true;
 	}
 	async function saveControls(){
@@ -189,12 +197,14 @@ async function tick(){
 	  const exitp=Number(document.getElementById('tailExit').value);
 	  const hs=parseInt(document.getElementById('hoursStart').value,10);
 	  const he=parseInt(document.getElementById('hoursEnd').value,10);
+	  const dmin=parseInt(document.getElementById('delayMin').value,10);
 	  if(!Number.isFinite(amount)||amount<5||amount>100){msg.textContent='金额需 5-100';msg.className='ctl-msg down';return}
 	  if(!Number.isFinite(target)||target<0){msg.textContent='止盈需 ≥0';msg.className='ctl-msg down';return}
 	  if(!Number.isFinite(entry)||entry<50||entry>99.9){msg.textContent='进场价需 50-99.9¢';msg.className='ctl-msg down';return}
 	  if(!Number.isFinite(exitp)||exitp<0||exitp>99.9){msg.textContent='出场价需 0-99.9¢';msg.className='ctl-msg down';return}
 	  if(entry>0&&exitp>0&&exitp<=entry){msg.textContent='出场价需高于进场价';msg.className='ctl-msg down';return}
 	  if(!Number.isInteger(hs)||hs<0||hs>23||!Number.isInteger(he)||he<0||he>23){msg.textContent='时段需 0-23 时';msg.className='ctl-msg down';return}
+	  if(!Number.isInteger(dmin)||dmin<0||dmin>4){msg.textContent='延迟分钟需 0-4';msg.className='ctl-msg down';return}
 	  btn.disabled=true;msg.textContent='保存中';
 	  try{
 	    const r=await fetch('/api/controls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
@@ -205,7 +215,9 @@ async function tick(){
 	      tail_exit_price:exitp/100,
 	      trading_hours_enabled:document.getElementById('hoursOn').checked,
 	      trading_hours_start_bt:hs,
-	      trading_hours_end_bt:he})});
+	      trading_hours_end_bt:he,
+	      entry_delay_enabled:document.getElementById('delayOn').checked,
+	      entry_delay_minutes:dmin})});
 	    const data=await r.json();if(!r.ok)throw new Error(data.error||'保存失败');
 	    controlsDirty=false;msg.textContent='已生效';msg.className='ctl-msg up';syncControls(data.controls||{});
 	  }catch(e){msg.textContent=e.message||'保存失败';msg.className='ctl-msg down'}finally{btn.disabled=false}
@@ -218,7 +230,21 @@ async function tick(){
 	document.getElementById('hoursOn').addEventListener('change',()=>{controlsDirty=true;saveControls()});
 	document.getElementById('hoursStart').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('hoursEnd').addEventListener('input',()=>{controlsDirty=true});
+	document.getElementById('delayOn').addEventListener('change',()=>{controlsDirty=true});
+	document.getElementById('delayMin').addEventListener('input',()=>{controlsDirty=true});
 	document.getElementById('saveControls').addEventListener('click',saveControls);
+	document.getElementById('unlockBtn').addEventListener('click',async function(){
+	  if(!confirm('确认解锁熔断？解锁后以当前权益为新回撤起点恢复交易。'))return;
+	  const b=this;b.disabled=true;
+	  try{
+	    const r=await fetch('/api/unlock',{method:'POST'});
+	    const data=await r.json();
+	    if(!r.ok)throw new Error(data.error||'解锁失败');
+	    const msg=document.getElementById('controlMsg');
+	    msg.textContent='已请求解锁（≤1s 生效）';msg.className='ctl-msg up';
+	  }catch(e){const msg=document.getElementById('controlMsg');msg.textContent=e.message||'解锁失败';msg.className='ctl-msg down'}
+	  b.disabled=false;
+	});
 	function set(id,v,cls){const el=document.getElementById(id);el.textContent=v;el.className=cls||''}
 function tbl(heads,rows){let h='<table><thead><tr>'+heads.map(x=>'<th>'+x+'</th>').join('')+'</tr></thead><tbody>';
   for(const r of rows){h+='<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>'}return h+'</tbody></table>'}
@@ -358,10 +384,12 @@ def get_controls(conn: _Db) -> dict:
         "trading_hours_enabled": False,
         "trading_hours_start_bt": 9,
         "trading_hours_end_bt": 21,
+        "entry_delay_enabled": False,
+        "entry_delay_minutes": 3,
     }
     try:
         rows = conn.execute(
-            "SELECT setting_key, value FROM runtime_settings WHERE setting_key IN (?, ?, ?, ?, ?, ?, ?, ?)",
+            "SELECT setting_key, value FROM runtime_settings WHERE setting_key IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             tuple(defaults),
         ).fetchall()
     except Exception:  # table is created by the bot during rolling upgrades
@@ -369,9 +397,9 @@ def get_controls(conn: _Db) -> dict:
     values = dict(rows)
     out = dict(defaults)
     for k, v in values.items():
-        if k in ("auto_trading_enabled", "trading_hours_enabled"):
+        if k in ("auto_trading_enabled", "trading_hours_enabled", "entry_delay_enabled"):
             out[k] = v.lower() == "true"
-        elif k in ("trading_hours_start_bt", "trading_hours_end_bt"):
+        elif k in ("trading_hours_start_bt", "trading_hours_end_bt", "entry_delay_minutes"):
             try:
                 out[k] = int(v)
             except (TypeError, ValueError):
@@ -420,6 +448,12 @@ def save_controls(db_path: str, payload: dict) -> dict:
         raise ValueError("trading hours must be integers")
     if not (0 <= start_h <= 23 and 0 <= end_h <= 23):
         raise ValueError("trading hours must be between 0 and 23")
+    delay_on = payload.get("entry_delay_enabled")
+    if not isinstance(delay_on, bool):
+        raise ValueError("entry_delay_enabled must be boolean")
+    delay_min = payload.get("entry_delay_minutes", 3)
+    if not isinstance(delay_min, int) or not 0 <= delay_min <= 4:
+        raise ValueError("entry_delay_minutes must be an integer between 0 and 4")
     amount_text = f"{amount:.2f}".rstrip("0").rstrip(".")
     target_text = f"{target:.2f}".rstrip("0").rstrip(".")
     entry_text = f"{entry:.3f}".rstrip("0").rstrip(".")
@@ -436,6 +470,8 @@ def save_controls(db_path: str, payload: dict) -> dict:
             ("trading_hours_enabled", "true" if hours_on else "false"),
             ("trading_hours_start_bt", str(start_h)),
             ("trading_hours_end_bt", str(end_h)),
+            ("entry_delay_enabled", "true" if delay_on else "false"),
+            ("entry_delay_minutes", str(delay_min)),
         ):
             conn.execute(
                 "INSERT INTO runtime_settings (setting_key, value, updated_ts_ms) VALUES (?, ?, ?) "
@@ -463,6 +499,15 @@ def build_status(db_path: str) -> dict:
                 "SELECT value FROM runtime_settings WHERE setting_key='rest_reason'").fetchone()
             if rr and rr[0]:
                 out["rest_reason"] = rr[0]
+        except Exception:
+            pass
+        # 风控状态（NORMAL|COOLDOWN|KILL；bot 变化时写回，供「解锁熔断」按钮显示）
+        out["risk_state"] = "NORMAL"
+        try:
+            rs = conn.execute(
+                "SELECT value FROM runtime_settings WHERE setting_key='risk_state'").fetchone()
+            if rs and rs[0]:
+                out["risk_state"] = rs[0]
         except Exception:
             pass
         # 当前窗口（多资产：所有活动窗口 + 每资产触发进度）；只显示启用中的资产
@@ -775,6 +820,32 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):  # noqa: N802
+        if self.path.startswith("/api/unlock"):
+            # 「解锁熔断」：写一次性请求，bot 每秒轮询 runtime_settings 时处理并置回 0
+            try:
+                conn = _Db(self.db_path)
+                try:
+                    now = int(time.time() * 1000)
+                    conn.execute(
+                        "INSERT INTO runtime_settings (setting_key, value, updated_ts_ms) VALUES ('reset_kill_request','1',?) "
+                        "ON CONFLICT (setting_key) DO UPDATE SET value=excluded.value, updated_ts_ms=excluded.updated_ts_ms",
+                        (now,),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                body = json.dumps({"ok": True}).encode("utf-8")
+                status = 200
+            except Exception as exc:  # noqa: BLE001
+                body = json.dumps({"ok": False, "error": f"unlock failed: {exc}"}).encode("utf-8")
+                status = 500
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if not self.path.startswith("/api/controls"):
             self.send_error(404)
             return
